@@ -20,14 +20,6 @@ module "azure_region" {
   azure_region = var.location
 }
 
-// Load a module for Azure Resource naming
-module "naming" {
-  # tflint-ignore: terraform_module_pinned_source
-  source         = "git::https://github.com/shigeyf/terraform-azurerm-naming?ref=master"
-  suffix         = concat(var.naming_suffix, [local.location_short_name])
-  suffix-padding = 5
-}
-
 locals {
   rand_id              = random_string.random.result
   location_short_name  = module.azure_region.location_short
