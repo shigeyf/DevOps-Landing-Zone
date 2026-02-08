@@ -4,6 +4,7 @@ module "tfbackend" {
   source  = "Azure/avm-res-storage-storageaccount/azurerm"
   version = "0.6.3"
 
+  enable_telemetry    = var.enable_telemetry
   name                = var.storage_account_name
   resource_group_name = local.resource_group_name
   location            = var.location
@@ -27,8 +28,11 @@ module "tfbackend" {
   }
 
   managed_identities = {
-    system_assigned            = true
-    user_assigned_resource_ids = var.enable_user_assigned_identity ? [azurerm_user_assigned_identity.this[0].id] : null
+    system_assigned = true
+    user_assigned_resource_ids = (var.enable_user_assigned_identity
+      ? [module.tfstate_uami[0].resource_id]
+      : null
+    )
   }
 
   role_assignments = {
@@ -43,7 +47,7 @@ module "tfbackend" {
     key_vault_resource_id = module.kv.resource_id
     key_name              = azurerm_key_vault_key.tfbackend_cmk[0].name
     user_assigned_identity = var.enable_user_assigned_identity ? {
-      resource_id = azurerm_user_assigned_identity.this[0].id
+      resource_id = module.tfstate_uami[0].resource_id
     } : null
   } : null
 }

@@ -4,7 +4,7 @@ locals {
   additional_ras = var.enable_user_assigned_identity ? {
     customer_managed_key_role_assignment = {
       role_definition_id_or_name = "Key Vault Crypto Officer"
-      principal_id               = azurerm_user_assigned_identity.this[0].principal_id
+      principal_id               = module.tfstate_uami[0].principal_id
     }
     } : {
     customer_managed_key_role_assignment = {
@@ -18,6 +18,7 @@ module "kv" {
   source  = "Azure/avm-res-keyvault-vault/azurerm"
   version = "0.10.1"
 
+  enable_telemetry    = var.enable_telemetry
   name                = var.keyvault_name
   resource_group_name = local.resource_group_name
   location            = var.location
@@ -48,6 +49,6 @@ module "kv" {
   }
 
   depends_on = [
-    azurerm_resource_group.base,
+    module.resource_group_base,
   ]
 }

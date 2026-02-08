@@ -16,7 +16,7 @@ resource "local_file" "bootstrap_config" {
   })
 
   depends_on = [
-    azurerm_resource_group.base,
+    module.resource_group_base,
     module.tfbackend,
     module.kv,
   ]
@@ -31,7 +31,7 @@ resource "local_file" "bootstrap_backend" {
   })
 
   depends_on = [
-    azurerm_resource_group.base,
+    module.resource_group_base,
     module.tfbackend,
   ]
 }
@@ -44,7 +44,7 @@ resource "local_file" "tfbackend_config_template" {
   })
 
   depends_on = [
-    azurerm_resource_group.base,
+    module.resource_group_base,
     module.tfbackend,
   ]
 }
