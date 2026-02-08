@@ -17,6 +17,12 @@ variable "target_subscription_id" {
   }
 }
 
+variable "enable_telemetry" {
+  description = "Enable telemetry for the deployed resources"
+  type        = bool
+  default     = false
+}
+
 variable "naming_suffix" {
   description = "Resource naming suffix for the deployed resources"
   type        = list(string)

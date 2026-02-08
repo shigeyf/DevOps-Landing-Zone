@@ -23,9 +23,11 @@ module "bootstrap" {
   resource_group_name  = local.resource_group_name
   storage_account_name = local.storage_account_name
   keyvault_name        = local.keyvault_name
+  storage_uami_name    = local.storage_uami_name
 
   location                            = var.location
   tags                                = var.tags
+  enable_telemetry                    = var.enable_telemetry
   tfstate_container_name              = var.tfstate_container_name
   enable_user_assigned_identity       = var.enable_user_assigned_identity
   enable_storage_customer_managed_key = var.enable_storage_customer_managed_key

@@ -2,9 +2,10 @@
 
 # Local variables for resource names
 locals {
-  st_short_name        = module.naming.storage_account.short_name
-  kv_short_name        = module.naming.key_vault.short_name
-  resource_group_name  = "${module.naming.resource_group.name}-${local.rand_id}"
-  storage_account_name = "${substr(local.st_short_name, 0, length(local.st_short_name) - 4)}${local.rand_id}"
-  keyvault_name        = "${substr(local.kv_short_name, 0, length(local.st_short_name) - 4)}${local.rand_id}"
+  resource_short_name = substr(local.resource_suffix_hash, 0, 16)
+
+  resource_group_name  = "rg-${join("-", local.resource_suffix)}-${local.rand_id}"
+  keyvault_name        = "kv-${local.resource_short_name}${local.rand_id}"
+  storage_account_name = "st${local.resource_short_name}${local.rand_id}"
+  storage_uami_name    = "uami-${local.resource_short_name}-${local.rand_id}-st"
 }
