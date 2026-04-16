@@ -251,7 +251,7 @@ infra/
     └── ...                             # (other modules unchanged)
 ```
 
-Additionally, the **GitOps governance repository** (for issue-driven project/repository onboarding) lives as a separate repo in the organization:
+Additionally, the **GitOps governance repository** (for issue-driven project/repository onboarding) lives as a separate repo in the organization. This repo contains **both** the project definitions (YAML) **and** the IaC modules (`project_github`, `project_azuredevops`) needed to provision them. This ensures the GitOps repo is self-contained — it does not depend on cloning the DevOps Landing Zone repo at apply time.
 
 ```text
 <org>/<gitops-governance-repo>/         # Separate repo for GitOps onboarding
@@ -262,12 +262,39 @@ Additionally, the **GitOps governance repository** (for issue-driven project/rep
 │   └── workflows/
 │       ├── project-request-to-pr.yaml  # Converts issues to PRs with YAML definitions
 │       └── project-create.yaml         # On PR merge: runs terraform apply for projects
-├── projects/
+│
+├── projects/                           # Project definitions (source of truth)
 │   ├── contoso-ecommerce.yaml          # Project definition (repos, subs, network, etc.)
 │   ├── contoso-payments.yaml
 │   └── ...
+│
+├── infra/                              # IaC modules for project provisioning
+│   ├── project_github/                 # Terraform root module for GitHub projects
+│   │   ├── _variables.tf
+│   │   ├── _variables.repositories.tf
+│   │   ├── _variables.network.tf
+│   │   ├── github.tf
+│   │   ├── uami.tf
+│   │   └── ...
+│   ├── project_azuredevops/            # Terraform root module for Azure DevOps projects
+│   │   ├── _variables.tf
+│   │   ├── _variables.repositories.tf
+│   │   └── ...
+│   └── modules/                        # Shared Terraform modules
+│       ├── github/
+│       ├── azure_devops/
+│       ├── github_workflows/
+│       └── ...
+│
 └── README.md
 ```
+
+> **Note:** The `infra/` directory in the GitOps governance repo contains the **same** `project_github`, `project_azuredevops`, and shared modules from the DevOps Landing Zone repo. Organizations can keep them in sync via:
+> - **Git submodule**: referencing the DevOps Landing Zone repo as a submodule under `infra/`.
+> - **Terraform module registry**: publishing modules to a private registry and referencing them by version.
+> - **Direct copy with version pinning**: copying the modules and tracking the upstream version in a `VERSION` file.
+>
+> The recommended approach is **Git submodule** or **Terraform module registry** for traceability.
 
 ---
 
@@ -1089,7 +1116,7 @@ flowchart LR
 
 ### 10.3 GitOps governance repository structure
 
-The GitOps governance repo is a **separate repository** in the organization (not part of the DevOps Landing Zone infra repo). It holds project definitions and the workflows that provision them.
+The GitOps governance repo is a **separate repository** in the organization (not part of the DevOps Landing Zone infra repo). It holds project definitions, the workflows that provision them, **and the IaC modules** (`project_github`, `project_azuredevops`, shared modules) that the workflows execute. This makes the GitOps repo **self-contained** — it does not need to clone the DevOps Landing Zone repo at provisioning time.
 
 ```text
 <org>/devops-gitops/                    # GitOps governance repository
@@ -1113,8 +1140,39 @@ The GitOps governance repo is a **separate repository** in the organization (not
 │   ├── contoso-payments.yaml
 │   └── contoso-analytics.yaml
 │
+├── infra/                              # IaC for project provisioning
+│   ├── project_github/                 # Terraform root module: GitHub projects
+│   │   ├── _variables.tf
+│   │   ├── _variables.repositories.tf
+│   │   ├── _variables.network.tf
+│   │   ├── github.tf
+│   │   ├── github.workflow.tf
+│   │   ├── uami.tf
+│   │   ├── uami.federation.tf
+│   │   ├── network.tf
+│   │   └── ...
+│   │
+│   ├── project_azuredevops/            # Terraform root module: Azure DevOps projects
+│   │   ├── _variables.tf
+│   │   ├── _variables.repositories.tf
+│   │   └── ...
+│   │
+│   └── modules/                        # Shared Terraform modules
+│       ├── github/                     # GitHub repo/team/environment resources
+│       ├── azure_devops/               # ADO project/repo/pipeline resources
+│       ├── github_workflows/           # Workflow file generation
+│       └── ...
+│
 └── README.md
 ```
+
+> **Keeping IaC in sync with DevOps Landing Zone:**
+> The `infra/` directory contains the same `project_github`, `project_azuredevops`, and shared modules from the DevOps Landing Zone repo. Organizations should keep them in sync via one of:
+> - **Git submodule**: `git submodule add <DevOps-Landing-Zone-repo> infra` — the GitOps repo references a pinned commit of the upstream.
+> - **Terraform module registry**: Publish modules to a private Terraform registry and reference them by version in the root modules.
+> - **Direct copy with version tracking**: Copy the modules and track the upstream version in a `VERSION` file.
+>
+> The **recommended** approach is Git submodule or Terraform module registry for traceability and reproducibility.
 
 ### 10.4 Project definition format (YAML)
 
@@ -1266,8 +1324,9 @@ jobs:
         run: |
           PROJECT_NAME=$(yq '.project_name' ${{ matrix.file }})
           VCS_PLATFORM=$(yq '.vcs_platform' ${{ matrix.file }})
-          # ... convert YAML to terraform.tfvars
-          cd infra/devops/project_${VCS_PLATFORM}
+          # ... convert YAML to terraform.tfvars and write to tfvars file
+          # The IaC modules live inside this repo under infra/
+          cd infra/project_${VCS_PLATFORM}
           terraform init -backend-config="key=projects/${PROJECT_NAME}.terraform.tfstate"
           terraform plan -out=tfplan
           # Note: The PR review/approval (CODEOWNERS) serves as the approval gate.
@@ -1384,7 +1443,7 @@ Resources use a random 4-character suffix (`rand_id`) to avoid collisions. The n
 
 | # | Question | Options | Recommendation |
 |---|----------|---------|----------------|
-| 1 | Should the GitOps governance repo be created as part of the Platform LZ (Tier 1), or set up independently? | Part of LZ / Independent / Template repo | Provide a **template repository** that organizations clone. The LZ can optionally create it via Terraform. |
+| 1 | Should the GitOps governance repo be created as part of the Platform LZ (Tier 1), or set up independently? | Part of LZ / Independent / Template repo | Provide a **template repository** that organizations clone. The repo must include `project_github`/`project_azuredevops` IaC modules (via git submodule or registry reference) so it is self-contained. The LZ can optionally create the repo via Terraform. |
 | 2 | Should BYO VNet be supported at the **LZ level** (the LZ itself uses an external VNet) or only at the **project level**? | LZ-level BYO / Project-level BYO / Both | Start with project-level BYO. LZ-level BYO is a larger change and can be added later. |
 | 3 | How should per-repo identities be named to stay within Azure naming limits? | `uami-<project>-<repo>-<env>-<job>-<rand>` / Hash-based short names | Use hash-based short names when the full name exceeds 128 chars. |
 | 4 | Should repository profiles be extensible by users or fixed? | Fixed set / User-defined profiles via HCL | Start with a fixed set (`infra`, `app`, `library`, `docs`), allow extension later. |
