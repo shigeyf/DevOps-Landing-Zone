@@ -71,7 +71,7 @@
 │  │  Platform Landing Zone  (devops/lz)                         │  │
 │  │  • Platform bootstrap: create Azure resources for the org   │  │
 │  │    – Shared identity RG (UAMIs)                             │  │
-│  │    – Shared agents RG (ACR, ACA env, Log Analytics)         │  │
+│  │    – Shared agents RG (ACR, Log Analytics, container-run UAMI)│  │
 │  │    – Network RG  (platform-managed VNet OR hub resources)   │  │
 │  │    – DevBox Dev Center                                      │  │
 │  │  • VCS governance:                                          │  │
@@ -111,16 +111,16 @@
 
 ### Key terms
 
-| Term                      | Definition                                                                                                                                                                                                                                                                                                  |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Organization**          | The top-level governance boundary — maps to a GitHub Organization or Azure DevOps Organization. Owns shared infrastructure and policies.                                                                                                                                                                    |
-| **Bootstrap**             | The foundational `_bootstrap` layer that creates the Storage Account (for tfstate) and Key Vault (for secrets). Runs once, produces a `bootstrap.config.json` consumed by all subsequent layers.                                                                                                            |
-| **Platform Landing Zone** | The shared infrastructure layer (`devops/lz`) provisioned once per organization. Creates Azure resource groups (identity, agents, network, DevBox) and VCS governance resources. Its own tfstate is stored in the bootstrap Storage Account. This is the "organizational bootstrap" for platform resources. |
-| **Project**               | A logical grouping of repositories, environments, identities, and runner jobs that together deliver one product or workload. In GitHub, a project is a naming-convention-based grouping of repos within the flat org. In Azure DevOps, a project maps to an actual Azure DevOps Project container.          |
-| **Repository Set**        | The ordered list of Git repositories that belong to a project. Each repo has a **profile** that determines its CI/CD workflow shape.                                                                                                                                                                        |
-| **Repository Profile**    | A template that defines the branch strategy, workflow files, environments, and identity needs for a class of repository (e.g., `infra`, `app`, `library`). Profiles are a **recommendation** — users can place infra and app code in a single repo if they prefer.                                          |
-| **Environment**           | A deployment target — maps 1:1 to an Azure subscription and a GitHub Actions Environment (or Azure DevOps Environment) with OIDC-federated UAMI.                                                                                                                                                            |
-| **Network Mode**          | How the project connects to Azure networking: `platform` (use the LZ-managed VNet) or `byo` (Bring Your Own VNet).                                                                                                                                                                                          |
+| Term                      | Definition                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Organization**          | The top-level governance boundary — maps to a GitHub Organization or Azure DevOps Organization. Owns shared infrastructure and policies.                                                                                                                                                                                                                                                                                                                        |
+| **Bootstrap**             | The foundational `_bootstrap` layer that creates the Storage Account (for tfstate) and Key Vault (for secrets). Runs once, produces a `bootstrap.config.json` consumed by all subsequent layers.                                                                                                                                                                                                                                                                |
+| **Platform Landing Zone** | The shared infrastructure layer (`devops/lz`) provisioned once per organization. Creates Azure resource groups (identity, agents, network, DevBox) and VCS governance resources. Org-scoped resources include ACR, Log Analytics, container-run UAMI, Dev Center, platform VNet, and governance rulesets. Its own tfstate is stored in the bootstrap Storage Account. ACA Environments for runners are created at the project level, not at the platform level. |
+| **Project**               | A logical grouping of repositories, environments, identities, and runner jobs that together deliver one product or workload. In GitHub, a project is a naming-convention-based grouping of repos within the flat org. In Azure DevOps, a project maps to an actual Azure DevOps Project container.                                                                                                                                                              |
+| **Repository Set**        | The ordered list of Git repositories that belong to a project. Each repo has a **profile** that determines its CI/CD workflow shape.                                                                                                                                                                                                                                                                                                                            |
+| **Repository Profile**    | A template that defines the branch strategy, workflow files, environments, and identity needs for a class of repository (e.g., `infra`, `app`, `library`). Profiles are a **recommendation** — users can place infra and app code in a single repo if they prefer.                                                                                                                                                                                              |
+| **Environment**           | A deployment target — maps 1:1 to an Azure subscription and a GitHub Actions Environment (or Azure DevOps Environment) with OIDC-federated UAMI.                                                                                                                                                                                                                                                                                                                |
+| **Network Mode**          | How the project connects to Azure networking: `platform` (use the LZ-managed VNet) or `byo` (Bring Your Own VNet).                                                                                                                                                                                                                                                                                                                                              |
 
 ---
 
@@ -186,8 +186,8 @@ Within Layer 1, there are three operational tiers that determine the order of Te
 │  terraform init -backend-config=devops.azurerm.tfbackend        │
 │  terraform apply                                                │
 │  Creates:                                                       │
-│    • Identity RG + UAMIs for container runs                     │
-│    • Agents RG + ACR + ACA Environment + Log Analytics          │
+│    • Identity RG + container-run UAMI                           │
+│    • Agents RG + ACR + Log Analytics                            │
 │    • Network RG + VNet + subnets + DNS zones + NAT GW           │
 │    • DevBox Dev Center + definitions                            │
 │    • VCS governance (GitHub rulesets, ADO policies, etc.)        │
@@ -206,6 +206,7 @@ Within Layer 1, there are three operational tiers that determine the order of Te
 │  Creates:                                                       │
 │    • VCS resources (repos, workflows, environments, etc.)       │
 │    • UAMIs + federated identity credentials                     │
+│    • ACA Environment (in platform VNet or BYO VNet)             │
 │    • Runners (ACA jobs or ACI)                                  │
 │    • DevBox project pool                                        │
 │    • Layer 2 Storage Account (for project's own IaC state)      │
@@ -349,18 +350,82 @@ Operationally:
 - **Tier 1** (`devops/lz`) is applied whenever the organization's platform configuration changes (e.g., new subnets, new DevBox definitions, governance policy changes).
 - Both tiers store their state in the same Layer 1 Storage Account, under different state keys.
 
-### 5.2 What stays the same
+### 5.2 Platform LZ resource review — org vs. project scoping
+
+Each resource created by the Platform LZ must be evaluated for whether it truly belongs at the organization level (shared across all projects) or should be moved to the project level (created per project). The following table summarizes the review:
+
+| Resource                          | Current Scope  | Correct Scope         | Verdict & Rationale                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| --------------------------------- | -------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Identity RG**                   | Platform (org) | **Platform (org)** ✅ | The identity RG is a shared resource container. It creates no identities itself — UAMIs are created at project deployment time (Tier 2) inside this RG. Keeping a shared RG at the org level is valid: it provides a predictable, centrally-managed location for all project UAMIs, simplifies RBAC, and avoids per-project RG sprawl.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| **Agents RG**                     | Platform (org) | **Needs split** ⚠️    | The agents RG currently hosts ACR, ACA Environment, Log Analytics, and container-run UAMI. ACR and Log Analytics are correctly org-scoped (shared image registry and centralized logging). However, the ACA Environment (runner compute) should be project-scoped — see below. The agents RG should be retained for org-scoped resources (ACR, Log Analytics, container-run UAMI), but runner compute should move to the project level.                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| **ACR (Container Registry)**      | Platform (org) | **Platform (org)** ✅ | Shared container image registry for runner images. All projects pull runner images from the same ACR. This is correctly scoped at the org level.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **Log Analytics Workspace**       | Platform (org) | **Platform (org)** ✅ | Centralized logging for agent/runner operations. Org-level scoping provides a single pane of glass for platform operations. Correctly shared.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| **Container-run UAMI**            | Platform (org) | **Platform (org)** ✅ | A shared identity used for pulling container images from ACR and reading Key Vault secrets during runner execution. Correctly scoped at the org level since it accesses org-level resources (ACR, Key Vault).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| **ACA Environment**               | Platform (org) | **Project** ❌        | **Issue:** The ACA Environment is currently created at the platform level and associated with the platform VNet. This is inconsistent with the BYO VNet design — self-hosted runners must run in the **project's VNet** for proper resource deployment and operations (private endpoint access, network isolation). When `network_mode = "byo"`, the project needs its own ACA Environment in its BYO VNet (already acknowledged in Decision #6). Even for `network_mode = "platform"`, creating the ACA Environment at the project level provides better isolation and avoids cross-project resource contention. **Recommendation:** Move ACA Environment creation to the project module (`project_github` / `project_azuredevops`). The platform LZ provides only shared infrastructure (ACR, Log Analytics, container-run UAMI) that runner environments consume. |
+| **Network RG + Platform VNet**    | Platform (org) | **Platform (org)** ✅ | The platform-managed VNet with subnets, DNS zones, and NAT gateway is correctly org-scoped. It provides shared network infrastructure for projects using `network_mode = "platform"`. BYO VNet projects bypass this entirely.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| **Private DNS Zones**             | Platform (org) | **Platform (org)** ✅ | Shared DNS zones for private endpoint resolution. BYO VNet projects link their VNet to these zones. Correctly org-scoped.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **Private Endpoints (bootstrap)** | Platform (org) | **Platform (org)** ✅ | Private endpoints to the bootstrap Storage Account and Key Vault are org-level resources. Correctly scoped.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| **Dev Center**                    | Platform (org) | **Platform (org)** ✅ | The Dev Center is a singleton org-level resource. DevBox definitions (images, SKUs) are defined here and shared across all projects. DevBox project pools are created at the project level referencing the org-level Dev Center. Correctly scoped.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| **Container image build tasks**   | Platform (org) | **Platform (org)** ✅ | ACR tasks for building runner container images. Shared across all projects. Correctly scoped.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| **VCS governance resources**      | Platform (org) | **Platform (org)** ✅ | Org-level rulesets (GitHub) and agent pools (Azure DevOps) are correctly scoped at the organization level.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+
+#### Key finding: ACA Environment should be project-scoped
+
+The most significant finding is that the **ACA Environment** (Azure Container Apps Environment for self-hosted runners) should be **moved from Platform LZ to the project module**:
+
+1. **Network isolation requirement:** Self-hosted runners must operate in the project's network context. For BYO VNet projects, the runner's ACA Environment must be in the project's VNet (with `Microsoft.App/environments` subnet delegation). The platform VNet's ACA Environment cannot be shared because ACA Environments are bound to a single VNet.
+
+2. **Current inconsistency:** The document's Section 8 (BYO VNet) already notes that BYO VNet projects create their own ACA Environment (Decision #6), but Section 5.2 still lists the ACA Environment as a shared platform resource. This is contradictory.
+
+3. **Recommended design:**
+   - **Platform LZ** provides: ACR, Log Analytics, container-run UAMI, container image build tasks — _shared infrastructure_ that all runner environments consume.
+   - **Project module** creates: ACA Environment (in the project's VNet or the platform VNet subnet), ACA runner jobs — _per-project runner compute_.
+   - For `network_mode = "platform"`: the project module creates its ACA Environment in the platform VNet's ACA subnet (subnet ID provided by LZ output).
+   - For `network_mode = "byo"`: the project module creates its ACA Environment in the BYO VNet's ACA subnet (subnet ID provided by user input).
+
+```text
+Platform LZ (Tier 1)                    Project (Tier 2)
+┌───────────────────────────┐           ┌──────────────────────────────────┐
+│ Provides (shared):        │           │ Creates (per project):           │
+│ • ACR (runner images)     │──────────►│ • ACA Environment               │
+│ • Log Analytics           │           │   (in platform VNet or BYO VNet) │
+│ • Container-run UAMI      │           │ • ACA runner jobs                │
+│ • Container image tasks   │           │ • ACI runner instances (if ACI)  │
+│ • Platform VNet + subnets │           │                                  │
+│                           │           │ Consumes from LZ:                │
+│ No longer creates:        │           │ • ACR login server               │
+│ • ACA Environment ← moved│           │ • Log Analytics workspace ID     │
+│                           │           │ • Container-run UAMI ID          │
+│                           │           │ • Subnet IDs (platform or BYO)   │
+└───────────────────────────┘           └──────────────────────────────────┘
+```
+
+#### Identity RG rationale
+
+The Identity RG pattern (empty org-level RG, populated at project time) is valid and useful for the following reasons:
+
+- **Centralized RBAC:** A single identity RG allows platform administrators to set consistent access policies for all UAMIs in one place.
+- **Discoverability:** All project UAMIs are co-located, making auditing and lifecycle management straightforward.
+- **No per-project RG overhead:** Avoids creating a separate identity RG per project, which would increase management surface.
+- **The RG itself is not empty at runtime** — it contains all project UAMIs after projects are provisioned.
+
+### 5.3 What stays the same (revised)
 
 - Bootstrap resources (Storage Account, Key Vault)
-- Identity resource group (shared across projects)
-- Agents resource group (ACR, ACA environment, Log Analytics)
+- Identity resource group (shared container for project UAMIs)
+- Agents resource group for org-scoped resources (ACR, Log Analytics, container-run UAMI)
 - Network resource group and platform-managed VNet creation
 - Dev Center and DevBox definitions
 - Container image build tasks
+- VCS governance resources (org-level rulesets, runner groups, agent pools)
 
-### 5.3 What changes
+### 5.4 What changes
 
-#### 5.3.1 Governance outputs (NEW)
+#### 5.4.1 ACA Environment moved to project level (CHANGED)
+
+The ACA Environment is no longer created by the Platform LZ. Instead, each project module creates its own ACA Environment in the appropriate VNet. See Section 5.2 for the full rationale.
+
+#### 5.4.2 Governance outputs (NEW)
 
 The LZ will expose organizational governance settings that projects inherit:
 
@@ -402,7 +467,7 @@ variable "org_repository_defaults" {
 }
 ```
 
-#### 5.3.2 New outputs for project consumption
+#### 5.4.3 New outputs for project consumption
 
 ```hcl
 # Additions to devops/lz/_outputs.tf
@@ -1654,3 +1719,9 @@ The items below were identified during architecture and best-practice review. Th
 5. **Production deployment guardrails (best-practice follow-up):**
    - Use environment protection/manual approvals for production applies, in addition to CODEOWNERS review.
    - Document emergency bypass and audit requirements.
+
+6. **ACA Environment refactoring — move from Platform LZ to project level (architecture follow-up):**
+   - The ACA Environment for self-hosted runners is currently created at the Platform LZ level and associated with the platform VNet. This is inconsistent with the BYO VNet design and the requirement for runners to operate in the project's network context.
+   - **Action:** Move ACA Environment creation from `devops/lz` to `project_github` / `project_azuredevops` modules. Each project creates its own ACA Environment in the appropriate VNet (platform subnet for `network_mode = "platform"`, BYO subnet for `network_mode = "byo"`).
+   - The Platform LZ continues to provide shared infrastructure consumed by project-level ACA Environments: ACR (images), Log Analytics (logging), container-run UAMI (image pull + secret access).
+   - See Section 5.2 for the full resource-by-resource analysis.
