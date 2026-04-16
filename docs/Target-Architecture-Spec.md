@@ -251,7 +251,7 @@ infra/
     └── ...                             # (other modules unchanged)
 ```
 
-Additionally, the **GitOps governance repository** (for issue-driven project/repository onboarding) lives as a separate repo in the organization. This repo contains **both** the project definitions (YAML) **and** the IaC modules (`project_github`, `project_azuredevops`) needed to provision them. This ensures the GitOps repo is self-contained — it does not depend on cloning the DevOps Landing Zone repo at apply time.
+Additionally, the **GitOps governance repository** (for issue-driven project/repository onboarding) lives as a **separate repo** in the GitOps governance organization, set up independently as a **template repository** (not provisioned via Terraform). This repo contains **both** the project definitions (YAML) **and** the IaC modules (`project_github`, `project_azuredevops`) needed to provision them. This ensures the GitOps repo is self-contained — it does not depend on cloning the DevOps Landing Zone repo at apply time.
 
 ```text
 <org>/<gitops-governance-repo>/         # Separate repo for GitOps onboarding
@@ -934,6 +934,23 @@ use_devbox               = false
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+### 8.7 Repo-level BYO VNet — analysis
+
+**Question:** Could different repositories within the same project use different BYO VNets?
+
+**Answer:** Repo-level BYO VNet is **not practical** in the current architecture. The network mode should remain a **project-level** decision.
+
+| Concern | Why repo-level BYO VNet is impractical |
+|---------|----------------------------------------|
+| **Runner infrastructure is project-scoped** | Self-hosted runners (ACA jobs, ACI containers) are created per project and shared across all repos in the project. A runner cannot exist in two different VNets simultaneously. |
+| **Private endpoints are shared** | The private endpoint to the tfstate Storage Account is project-scoped. It lives in one subnet and is used by all repos' workflows. |
+| **State management** | All repos in a project share the same Terraform backend (storage account + container). Splitting VNets per repo would require separate state backends, which defeats the purpose of the project grouping. |
+| **Complexity vs. value** | Per-repo VNets would require a `for_each` over repos with different network configs, separate ACA environments per repo, and per-repo DNS zone links — significant complexity for a rare use case. |
+
+**If repos truly need different networks, they likely belong in different projects.** The project boundary is the right level for network isolation. A team that needs repo A in VNet X and repo B in VNet Y should define two separate projects, each with its own `network_mode` and `byo_vnet` configuration.
+
+> **Note:** This does not limit where the *application* deploys — application-level networking (where the app runs) is handled by the application's own Terraform/IaC, not by the DevOps Landing Zone. The BYO VNet here governs only the *CI/CD infrastructure* (runners, private endpoints, DevBox).
+
 ---
 
 ## 9. Organization-Level Governance (GitHub & Azure DevOps)
@@ -1116,7 +1133,16 @@ flowchart LR
 
 ### 10.3 GitOps governance repository structure
 
-The GitOps governance repo is a **separate repository** in the organization (not part of the DevOps Landing Zone infra repo). It holds project definitions, the workflows that provision them, **and the IaC modules** (`project_github`, `project_azuredevops`, shared modules) that the workflows execute. This makes the GitOps repo **self-contained** — it does not need to clone the DevOps Landing Zone repo at provisioning time.
+The GitOps governance repo is **set up independently** (not created by Terraform) as a **template repository** that organizations clone. It is hosted in the **GitOps governance organization** in GitHub Enterprise alongside the platform LZ repo. Creating GitHub repos via Terraform is complex and fragile — the template repo approach is simpler and more reliable.
+
+The governance repo holds project definitions, the workflows that provision them, **and the IaC modules** (`project_github`, `project_azuredevops`, shared modules) that the workflows execute. This makes the GitOps repo **self-contained** — it does not need to clone the DevOps Landing Zone repo at provisioning time.
+
+```text
+# GitHub Enterprise organization layout:
+<governance-org>/
+├── devops-landing-zone/           # Platform LZ IaC repo (Tier 0 + Tier 1)
+└── devops-gitops/                 # GitOps governance repo (project IaC, template repo)
+```
 
 ```text
 <org>/devops-gitops/                    # GitOps governance repository
@@ -1443,9 +1469,9 @@ Resources use a random 4-character suffix (`rand_id`) to avoid collisions. The n
 
 | # | Question | Options | Recommendation |
 |---|----------|---------|----------------|
-| 1 | Should the GitOps governance repo be created as part of the Platform LZ (Tier 1), or set up independently? | Part of LZ / Independent / Template repo | Provide a **template repository** that organizations clone. The repo must include `project_github`/`project_azuredevops` IaC modules (via git submodule or registry reference) so it is self-contained. The LZ can optionally create the repo via Terraform. |
-| 2 | Should BYO VNet be supported at the **LZ level** (the LZ itself uses an external VNet) or only at the **project level**? | LZ-level BYO / Project-level BYO / Both | Start with project-level BYO. LZ-level BYO is a larger change and can be added later. |
-| 3 | How should per-repo identities be named to stay within Azure naming limits? | `uami-<project>-<repo>-<env>-<job>-<rand>` / Hash-based short names | Use hash-based short names when the full name exceeds 128 chars. |
+| 1 | Should the GitOps governance repo be created as part of the Platform LZ (Tier 1), or set up independently? | Part of LZ / Independent / Template repo | **✅ Decided:** Set up independently as a **template repository**. Creating a GitHub repo via Terraform is complex and fragile. The GitOps governance organization in GitHub Enterprise hosts both the **platform LZ repo** (LZ IaC) and the **GitOps governance repo** (project IaC). The governance repo must include `project_github`/`project_azuredevops` IaC modules (via git submodule or registry reference) so it is self-contained. |
+| 2 | Should BYO VNet be supported at the **LZ level** (the LZ itself uses an external VNet) or only at the **project level**? | LZ-level BYO / Project-level BYO / Both | **✅ Decided:** Start with **project-level BYO VNet**. LZ-level BYO is a larger change and can be added later. Repo-level BYO VNet (different VNets per repo within a project) is **not practical** — see Section 8.7 for analysis. |
+| 3 | How should per-repo identities be named to stay within Azure naming limits? | `uami-<project>-<repo>-<env>-<job>-<rand>` / Hash-based short names | **⏳ Pending:** Stakeholder prefers a mixed approach (truncated answer: "uami-…"). Current code uses `uami-<naming_module_prefix>-<rand_id>-<env_key>`. Awaiting full naming pattern preference — please complete your answer. |
 | 4 | Should repository profiles be extensible by users or fixed? | Fixed set / User-defined profiles via HCL | Start with a fixed set (`infra`, `app`, `library`, `docs`), allow extension later. |
 | 5 | Should the org-level ruleset be enforced or advisory? | `active` / `evaluate` (audit-only) | Default to `active` with bypass for org admins. |
 | 6 | Should BYO VNet projects share the platform ACA Environment or create their own? | Shared / Per-project / Configurable | Per-project ACA Environment in the BYO VNet (required for subnet delegation). |
