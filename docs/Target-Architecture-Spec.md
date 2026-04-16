@@ -532,6 +532,17 @@ When `shared_identities = true`: behavior is identical to today — one set of U
 
 When `shared_identities = false`: each repository gets its own set of UAMIs, enabling fine-grained RBAC (e.g., the `infra` repo has `Contributor`, the `app` repo has only `AcrPush` + `Web Apps Contributor`).
 
+#### UAMI naming
+
+UAMIs use a mixed naming pattern that keeps project and repo human-readable while hashing env/job details:
+
+```
+uami-<project>-<repo>-<hash>          # per-repo identities (shared_identities = false)
+uami-<project>-<hash>                 # shared identities (shared_identities = true)
+```
+
+See [Section 11.3](#113-uami-naming-convention) for the full naming convention, hash derivation, and examples.
+
 ### 6.6 Sample `terraform.tfvars` — multi-repo project
 
 ```hcl
@@ -1420,6 +1431,56 @@ Resources use a random 4-character suffix (`rand_id`) to avoid collisions. The n
 
    Users can override names in the `repositories` variable.
 
+### 11.3 UAMI naming convention
+
+Per-repo UAMI names use a **mixed** approach that balances readability and Azure naming limits (128 chars max):
+
+```
+uami-<project>-<repo>-<hash>
+```
+
+| Segment | Source | Purpose |
+|---------|--------|---------|
+| `uami-` | Fixed prefix | Resource type identifier |
+| `<project>` | `var.project_name` | Human-readable project identification |
+| `<repo>` | Repository name from `repositories` list | Human-readable repo identification |
+| `<hash>` | `substr(sha256("<env>-<job_type>-<rand_id>"), 0, 8)` | Collision-resistant suffix encoding environment, job type, and random seed |
+
+**Key design decisions:**
+
+- **Project and repo are human-readable**: When browsing UAMIs in the Azure portal or CLI, operators can immediately identify which project and repository a UAMI belongs to.
+- **Env and job type are hashed**: The environment (dev/staging/prod) and job type (plan/apply) don't need to be visible in the name — they are encoded in the hash. Operators can look up the mapping via Terraform state or resource tags.
+- **Hash provides collision resistance**: The 8-character hex hash (from SHA-256) gives ~4 billion combinations per project-repo pair, which is more than sufficient.
+- **Tags carry full metadata**: Each UAMI should be tagged with `environment`, `job_type`, `project`, and `repo` for full traceability independent of the name.
+
+**Example names:**
+
+```
+uami-contoso-ecom-infra-a3f7b2c1        # project=contoso-ecom, repo=infra, env=prod/apply
+uami-contoso-ecom-infra-e9d4c8f0        # project=contoso-ecom, repo=infra, env=dev/plan
+uami-contoso-ecom-api-7b2e1a9d          # project=contoso-ecom, repo=api, env=prod/apply
+```
+
+**When `shared_identities = true`** (backward-compatible mode), the `<repo>` segment is omitted:
+
+```
+uami-<project>-<hash>
+```
+
+**Terraform implementation sketch:**
+
+```hcl
+locals {
+  uami_names = {
+    for key in local.identity_keys : key => (
+      var.shared_identities
+      ? "uami-${var.project_name}-${substr(sha256("${key}-${local.rand_id}"), 0, 8)}"
+      : "uami-${var.project_name}-${local.repo_name_by_key[key]}-${substr(sha256("${key}-${local.rand_id}"), 0, 8)}"
+    )
+  }
+}
+```
+
 ---
 
 ## 12. Migration Path from Current Design
@@ -1471,7 +1532,7 @@ Resources use a random 4-character suffix (`rand_id`) to avoid collisions. The n
 |---|----------|---------|----------------|
 | 1 | Should the GitOps governance repo be created as part of the Platform LZ (Tier 1), or set up independently? | Part of LZ / Independent / Template repo | **✅ Decided:** Set up independently as a **template repository**. Creating a GitHub repo via Terraform is complex and fragile. The GitOps governance organization in GitHub Enterprise hosts both the **platform LZ repo** (LZ IaC) and the **GitOps governance repo** (project IaC). The governance repo must include `project_github`/`project_azuredevops` IaC modules (via git submodule or registry reference) so it is self-contained. |
 | 2 | Should BYO VNet be supported at the **LZ level** (the LZ itself uses an external VNet) or only at the **project level**? | LZ-level BYO / Project-level BYO / Both | **✅ Decided:** Start with **project-level BYO VNet**. LZ-level BYO is a larger change and can be added later. Repo-level BYO VNet (different VNets per repo within a project) is **not practical** — see Section 8.7 for analysis. |
-| 3 | How should per-repo identities be named to stay within Azure naming limits? | `uami-<project>-<repo>-<env>-<job>-<rand>` / Hash-based short names | **⏳ Pending:** Stakeholder prefers a mixed approach (truncated answer: "uami-…"). Current code uses `uami-<naming_module_prefix>-<rand_id>-<env_key>`. Awaiting full naming pattern preference — please complete your answer. |
+| 3 | How should per-repo identities be named to stay within Azure naming limits? | `uami-<project>-<repo>-<env>-<job>-<rand>` / Hash-based short names | **✅ Decided:** Mixed approach — `uami-<project>-<repo>-<hash>`. Project and repo names remain human-readable for identification; `<hash>` is a short hash derived from env + job type + random seed. No need for env/job to appear in the name — they are encoded in the hash for collision resistance while keeping the name within Azure's 128-char limit. See Section 11.3 for details. |
 | 4 | Should repository profiles be extensible by users or fixed? | Fixed set / User-defined profiles via HCL | Start with a fixed set (`infra`, `app`, `library`, `docs`), allow extension later. |
 | 5 | Should the org-level ruleset be enforced or advisory? | `active` / `evaluate` (audit-only) | Default to `active` with bypass for org admins. |
 | 6 | Should BYO VNet projects share the platform ACA Environment or create their own? | Shared / Per-project / Configurable | Per-project ACA Environment in the BYO VNet (required for subnet delegation). |
