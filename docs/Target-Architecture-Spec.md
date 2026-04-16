@@ -29,16 +29,16 @@
 
 ### Current state
 
-| Area | Today | Gap |
-|------|-------|-----|
-| **Bootstrap** | Single bootstrap creates Storage Account + Key Vault for tfstate | Bootstrap only covers tfstate storage; no separate bootstrap for platform LZ resources (identity, network, agents) |
-| **Organization concept** | GitHub org name is passed as a string; no governance boundary | No formalized org-level resources, policies, or runner governance |
-| **Project model** | 1 project = 1 main repo + optional templates repo | Real projects often have multiple repos (infra, app, data, ops, shared libs) |
-| **GitHub vs Azure DevOps** | Separate code paths, no unified abstraction | GitHub lacks a "Project" concept that Azure DevOps has; no consistent governance model across both |
-| **Network / VNet** | Platform always creates a new VNet from address-prefix inputs | No option to plug into an existing (enterprise-provided) VNet |
-| **Portfolio onboarding** | Each project provisioned via separate `terraform apply` | No self-service or GitOps-driven onboarding pattern |
-| **Identities** | UAMIs created per project; subscription mapping done at project time | No clarity on whether identities/subscriptions are pre-registered at the platform level or project level |
-| **Documentation** | Paths reference `infra/terraform/…` while code lives under `infra/…` | Confusing for adopters |
+| Area                       | Today                                                                | Gap                                                                                                                |
+| -------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| **Bootstrap**              | Single bootstrap creates Storage Account + Key Vault for tfstate     | Bootstrap only covers tfstate storage; no separate bootstrap for platform LZ resources (identity, network, agents) |
+| **Organization concept**   | GitHub org name is passed as a string; no governance boundary        | No formalized org-level resources, policies, or runner governance                                                  |
+| **Project model**          | 1 project = 1 main repo + optional templates repo                    | Real projects often have multiple repos (infra, app, data, ops, shared libs)                                       |
+| **GitHub vs Azure DevOps** | Separate code paths, no unified abstraction                          | GitHub lacks a "Project" concept that Azure DevOps has; no consistent governance model across both                 |
+| **Network / VNet**         | Platform always creates a new VNet from address-prefix inputs        | No option to plug into an existing (enterprise-provided) VNet                                                      |
+| **Portfolio onboarding**   | Each project provisioned via separate `terraform apply`              | No self-service or GitOps-driven onboarding pattern                                                                |
+| **Identities**             | UAMIs created per project; subscription mapping done at project time | No clarity on whether identities/subscriptions are pre-registered at the platform level or project level           |
+| **Documentation**          | Paths reference `infra/terraform/…` while code lives under `infra/…` | Confusing for adopters                                                                                             |
 
 ### Goals
 
@@ -50,7 +50,7 @@
 6. Strengthen **organization-level governance** for both GitHub and Azure DevOps.
 7. Provide a **GitOps-driven project/repository onboarding** pattern (issue → PR → provisioning).
 8. Clarify the **identity and subscription mapping** strategy.
-9. Keep backward compatibility for current single-repo users.
+9. Provide a simple migration guide for V1 users to adopt the redesigned V2 architecture.
 
 ---
 
@@ -111,16 +111,16 @@
 
 ### Key terms
 
-| Term | Definition |
-|------|-----------|
-| **Organization** | The top-level governance boundary — maps to a GitHub Organization or Azure DevOps Organization. Owns shared infrastructure and policies. |
-| **Bootstrap** | The foundational `_bootstrap` layer that creates the Storage Account (for tfstate) and Key Vault (for secrets). Runs once, produces a `bootstrap.config.json` consumed by all subsequent layers. |
+| Term                      | Definition                                                                                                                                                                                                                                                                                                  |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Organization**          | The top-level governance boundary — maps to a GitHub Organization or Azure DevOps Organization. Owns shared infrastructure and policies.                                                                                                                                                                    |
+| **Bootstrap**             | The foundational `_bootstrap` layer that creates the Storage Account (for tfstate) and Key Vault (for secrets). Runs once, produces a `bootstrap.config.json` consumed by all subsequent layers.                                                                                                            |
 | **Platform Landing Zone** | The shared infrastructure layer (`devops/lz`) provisioned once per organization. Creates Azure resource groups (identity, agents, network, DevBox) and VCS governance resources. Its own tfstate is stored in the bootstrap Storage Account. This is the "organizational bootstrap" for platform resources. |
-| **Project** | A logical grouping of repositories, environments, identities, and runner jobs that together deliver one product or workload. In GitHub, a project is a naming-convention-based grouping of repos within the flat org. In Azure DevOps, a project maps to an actual Azure DevOps Project container. |
-| **Repository Set** | The ordered list of Git repositories that belong to a project. Each repo has a **profile** that determines its CI/CD workflow shape. |
-| **Repository Profile** | A template that defines the branch strategy, workflow files, environments, and identity needs for a class of repository (e.g., `infra`, `app`, `library`). Profiles are a **recommendation** — users can place infra and app code in a single repo if they prefer. |
-| **Environment** | A deployment target — maps 1:1 to an Azure subscription and a GitHub Actions Environment (or Azure DevOps Environment) with OIDC-federated UAMI. |
-| **Network Mode** | How the project connects to Azure networking: `platform` (use the LZ-managed VNet) or `byo` (Bring Your Own VNet). |
+| **Project**               | A logical grouping of repositories, environments, identities, and runner jobs that together deliver one product or workload. In GitHub, a project is a naming-convention-based grouping of repos within the flat org. In Azure DevOps, a project maps to an actual Azure DevOps Project container.          |
+| **Repository Set**        | The ordered list of Git repositories that belong to a project. Each repo has a **profile** that determines its CI/CD workflow shape.                                                                                                                                                                        |
+| **Repository Profile**    | A template that defines the branch strategy, workflow files, environments, and identity needs for a class of repository (e.g., `infra`, `app`, `library`). Profiles are a **recommendation** — users can place infra and app code in a single repo if they prefer.                                          |
+| **Environment**           | A deployment target — maps 1:1 to an Azure subscription and a GitHub Actions Environment (or Azure DevOps Environment) with OIDC-federated UAMI.                                                                                                                                                            |
+| **Network Mode**          | How the project connects to Azure networking: `platform` (use the LZ-managed VNet) or `byo` (Bring Your Own VNet).                                                                                                                                                                                          |
 
 ---
 
@@ -292,6 +292,7 @@ Additionally, the **GitOps governance repository** (for issue-driven project/rep
 ```
 
 > **Note:** The `infra/` directory in the GitOps governance repo contains the **same** `project_github`, `project_azuredevops`, and shared modules from the DevOps Landing Zone repo. Organizations can keep them in sync via:
+>
 > - **Git submodule**: referencing the DevOps Landing Zone repo as a submodule under `infra/`.
 > - **Terraform module registry**: publishing modules to a private registry and referencing them by version.
 > - **Direct copy with version pinning**: copying the modules and tracking the upstream version in a `VERSION` file.
@@ -307,6 +308,7 @@ Additionally, the **GitOps governance repository** (for issue-driven project/rep
 The Landing Zone serves as the **organizational platform bootstrap**. It is the first Terraform layer applied after Tier 0 (`_bootstrap`), and it creates all shared Azure and VCS resources that projects depend on.
 
 Operationally:
+
 - **Tier 0** (`_bootstrap`) is applied once and very rarely updated.
 - **Tier 1** (`devops/lz`) is applied whenever the organization's platform configuration changes (e.g., new subnets, new DevBox definitions, governance policy changes).
 - Both tiers store their state in the same Storage Account, under different state keys.
@@ -403,11 +405,11 @@ Repository profiles (`infra`, `app`, `library`, `docs`) are **recommended patter
 
 **A single repository containing both infra and app code is fully supported.** In that case, the user assigns the `infra` profile (which includes the most comprehensive branch/environment strategy) and the single repo gets the full `validate → plan → apply` pipeline. The multi-repo pattern is offered for teams who prefer separation of concerns, independent release cadences, or fine-grained RBAC.
 
-| Scenario | Configuration | Result |
-|----------|--------------|--------|
-| Single repo (current behavior) | `repositories = []` or single entry with profile `infra` | Identical to today |
-| Separated infra + app | Two entries: `profile = "infra"` + `profile = "app"` | Separate workflow shapes, optionally separate UAMIs |
-| Monorepo with multiple concerns | Single entry with profile `infra` | One repo gets the full pipeline; internal structure is user's choice |
+| Scenario                        | Configuration                                            | Result                                                               |
+| ------------------------------- | -------------------------------------------------------- | -------------------------------------------------------------------- |
+| Single repo (current behavior)  | `repositories = []` or single entry with profile `infra` | Identical to today                                                   |
+| Separated infra + app           | Two entries: `profile = "infra"` + `profile = "app"`     | Separate workflow shapes, optionally separate UAMIs                  |
+| Monorepo with multiple concerns | Single entry with profile `infra`                        | One repo gets the full pipeline; internal structure is user's choice |
 
 ### 6.2 Current design (single repo)
 
@@ -483,12 +485,12 @@ locals {
 
 Profiles define the **workflow shape** for a repository. They are defined in the `github_workflows` module and control which CI/CD workflows and branch strategies are generated.
 
-| Profile | Branches | CI Workflow | CD Workflow | Environments |
-|---------|----------|-------------|-------------|-------------|
-| `infra` | `features/*`, `dev`, `staging`, `main` | `validate` + `plan` on PR | `plan` + `apply` on push | `features`, `development`, `staging`, `production` |
-| `app` | `features/*`, `dev`, `staging`, `main` | `build` + `test` on PR | `build` + `deploy` on push | `development`, `staging`, `production` |
-| `library` | `features/*`, `main` | `build` + `test` on PR | `publish` on tag | — |
-| `docs` | `main` | — | — | — |
+| Profile   | Branches                               | CI Workflow               | CD Workflow                | Environments                                       |
+| --------- | -------------------------------------- | ------------------------- | -------------------------- | -------------------------------------------------- |
+| `infra`   | `features/*`, `dev`, `staging`, `main` | `validate` + `plan` on PR | `plan` + `apply` on push   | `features`, `development`, `staging`, `production` |
+| `app`     | `features/*`, `dev`, `staging`, `main` | `build` + `test` on PR    | `build` + `deploy` on push | `development`, `staging`, `production`             |
+| `library` | `features/*`, `main`                   | `build` + `test` on PR    | `publish` on tag           | —                                                  |
+| `docs`    | `main`                                 | —                         | —                          | —                                                  |
 
 > **Note:** The `docs` profile generates **no CI/CD workflows**. It creates the repository with default branch protection only. This profile is intended for documentation-only repos (wikis, ADRs, runbooks) that don't need build or deployment pipelines.
 
@@ -671,15 +673,15 @@ Organization                        Organization
 
 Key differences:
 
-| Aspect | GitHub | Azure DevOps |
-|--------|--------|-------------|
-| **"Project" concept** | No native project; repos are flat under the org | First-class `Project` container with its own security boundary |
-| **Environments** | Defined per repository | Defined per project |
-| **Pipelines** | Defined in repo (GitHub Actions workflows) | Defined in project, pointing to repo files |
-| **Teams/permissions** | Org-wide teams with per-repo access | Project-scoped teams + org-level groups |
-| **Agent/Runner pools** | Org-level runner groups | Both org-level and project-scoped pools |
-| **Branch protection** | Per-repo rulesets OR org-level rulesets | Per-repo branch policies within a project |
-| **Service Connections** | N/A (OIDC federation per environment) | Project-scoped service connections (workload identity federation) |
+| Aspect                  | GitHub                                          | Azure DevOps                                                      |
+| ----------------------- | ----------------------------------------------- | ----------------------------------------------------------------- |
+| **"Project" concept**   | No native project; repos are flat under the org | First-class `Project` container with its own security boundary    |
+| **Environments**        | Defined per repository                          | Defined per project                                               |
+| **Pipelines**           | Defined in repo (GitHub Actions workflows)      | Defined in project, pointing to repo files                        |
+| **Teams/permissions**   | Org-wide teams with per-repo access             | Project-scoped teams + org-level groups                           |
+| **Agent/Runner pools**  | Org-level runner groups                         | Both org-level and project-scoped pools                           |
+| **Branch protection**   | Per-repo rulesets OR org-level rulesets         | Per-repo branch policies within a project                         |
+| **Service Connections** | N/A (OIDC federation per environment)           | Project-scoped service connections (workload identity federation) |
 
 ### 7.2 The abstraction: DevOps LZ "Project"
 
@@ -737,13 +739,13 @@ variable "use_separate_repo_for_pipeline_templates" { ... }
 
 For governance to be consistent across both platforms, the Platform LZ defines **platform-agnostic governance defaults** that are then mapped to platform-specific resources:
 
-| DevOps LZ Governance Setting | GitHub Implementation | Azure DevOps Implementation |
-|-------|--------|-------------|
-| `require_pull_request = true` | Org ruleset: `pull_request` block | Branch policy: `azuredevops_branch_policy_min_reviewers` |
-| `required_review_count = 1` | Org ruleset: `required_approving_review_count` | Branch policy: `minimum_reviewer_count` |
-| `dismiss_stale_reviews = true` | Org ruleset: `dismiss_stale_reviews_on_push` | (Not directly available; approximated via policy settings) |
-| `require_status_checks = true` | Org ruleset: `required_status_checks` | Branch policy: `azuredevops_branch_policy_build_validation` |
-| `runner_group / agent_pool` | `github_actions_runner_group` | `azuredevops_agent_pool` (org-level) |
+| DevOps LZ Governance Setting   | GitHub Implementation                          | Azure DevOps Implementation                                 |
+| ------------------------------ | ---------------------------------------------- | ----------------------------------------------------------- |
+| `require_pull_request = true`  | Org ruleset: `pull_request` block              | Branch policy: `azuredevops_branch_policy_min_reviewers`    |
+| `required_review_count = 1`    | Org ruleset: `required_approving_review_count` | Branch policy: `minimum_reviewer_count`                     |
+| `dismiss_stale_reviews = true` | Org ruleset: `dismiss_stale_reviews_on_push`   | (Not directly available; approximated via policy settings)  |
+| `require_status_checks = true` | Org ruleset: `required_status_checks`          | Branch policy: `azuredevops_branch_policy_build_validation` |
+| `runner_group / agent_pool`    | `github_actions_runner_group`                  | `azuredevops_agent_pool` (org-level)                        |
 
 This mapping is implemented in separate files (`governance.github.tf` and `governance.azuredevops.tf`) within the LZ module, driven by the same governance variables.
 
@@ -754,6 +756,7 @@ This mapping is implemented in separate files (`governance.github.tf` and `gover
 ### 8.1 Problem
 
 Today the Landing Zone always creates a fresh VNet with all required subnets. Enterprise customers often:
+
 - Have a **hub-and-spoke** topology managed by a central networking team.
 - Need DevOps resources to land in a **pre-provisioned spoke VNet** with corporate firewall rules, DNS forwarding, and peering already configured.
 - Cannot use arbitrary address spaces.
@@ -762,10 +765,10 @@ Today the Landing Zone always creates a fresh VNet with all required subnets. En
 
 Add a `network_mode` variable that selects between two modes:
 
-| Mode | Description | Who creates VNet? | Who provides subnet IDs? |
-|------|-------------|-------------------|--------------------------|
-| `platform` | Current behavior (default). The LZ creates and manages the VNet. | `devops/lz` module | `devops/lz` outputs |
-| `byo` | Enterprise-provided VNet. User supplies existing subnet IDs. | External (networking team) | User input at **project level** |
+| Mode       | Description                                                      | Who creates VNet?          | Who provides subnet IDs?        |
+| ---------- | ---------------------------------------------------------------- | -------------------------- | ------------------------------- |
+| `platform` | Current behavior (default). The LZ creates and manages the VNet. | `devops/lz` module         | `devops/lz` outputs             |
+| `byo`      | Enterprise-provided VNet. User supplies existing subnet IDs.     | External (networking team) | User input at **project level** |
 
 ### 8.3 Landing Zone changes (`devops/lz`)
 
@@ -981,16 +984,16 @@ use_devbox               = false
 
 **Answer:** Repo-level BYO VNet is **not practical** in the current architecture. The network mode should remain a **project-level** decision.
 
-| Concern | Why repo-level BYO VNet is impractical |
-|---------|----------------------------------------|
-| **Runner infrastructure is project-scoped** | Self-hosted runners (ACA jobs, ACI containers) are created per project and shared across all repos in the project. A runner cannot exist in two different VNets simultaneously. |
-| **Private endpoints are shared** | The private endpoint to the tfstate Storage Account is project-scoped. It lives in one subnet and is used by all repos' workflows. |
-| **State management** | All repos in a project share the same Terraform backend (storage account + container). Splitting VNets per repo would require separate state backends, which defeats the purpose of the project grouping. |
-| **Complexity vs. value** | Per-repo VNets would require a `for_each` over repos with different network configs, separate ACA environments per repo, and per-repo DNS zone links — significant complexity for a rare use case. |
+| Concern                                     | Why repo-level BYO VNet is impractical                                                                                                                                                                    |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Runner infrastructure is project-scoped** | Self-hosted runners (ACA jobs, ACI containers) are created per project and shared across all repos in the project. A runner cannot exist in two different VNets simultaneously.                           |
+| **Private endpoints are shared**            | The private endpoint to the tfstate Storage Account is project-scoped. It lives in one subnet and is used by all repos' workflows.                                                                        |
+| **State management**                        | All repos in a project share the same Terraform backend (storage account + container). Splitting VNets per repo would require separate state backends, which defeats the purpose of the project grouping. |
+| **Complexity vs. value**                    | Per-repo VNets would require a `for_each` over repos with different network configs, separate ACA environments per repo, and per-repo DNS zone links — significant complexity for a rare use case.        |
 
 **If repos truly need different networks, they likely belong in different projects.** The project boundary is the right level for network isolation. A team that needs repo A in VNet X and repo B in VNet Y should define two separate projects, each with its own `network_mode` and `byo_vnet` configuration.
 
-> **Note:** This does not limit where the *application* deploys — application-level networking (where the app runs) is handled by the application's own Terraform/IaC, not by the DevOps Landing Zone. The BYO VNet here governs only the *CI/CD infrastructure* (runners, private endpoints, DevBox).
+> **Note:** This does not limit where the _application_ deploys — application-level networking (where the app runs) is handled by the application's own Terraform/IaC, not by the DevOps Landing Zone. The BYO VNet here governs only the _CI/CD infrastructure_ (runners, private endpoints, DevBox).
 
 ---
 
@@ -1124,14 +1127,14 @@ resource "azuredevops_agent_pool" "org" {
 
 ### 9.5 Governance parity matrix
 
-| Governance Intent | GitHub (Org-level) | Azure DevOps (Org-level) | Azure DevOps (Project-level) |
-|---|---|---|---|
-| **Require PRs for default branch** | `github_organization_ruleset` | N/A | `azuredevops_branch_policy_min_reviewers` |
-| **Min review count** | Ruleset: `required_approving_review_count` | N/A | Branch policy: `minimum_reviewer_count` |
-| **Dismiss stale reviews** | Ruleset: `dismiss_stale_reviews_on_push` | N/A | (Not directly supported) |
-| **Require status checks** | Ruleset: `required_status_checks` | N/A | `azuredevops_branch_policy_build_validation` |
-| **Agent/Runner pools** | `github_actions_runner_group` (org) | `azuredevops_agent_pool` (org) | `azuredevops_agent_queue` (project) |
-| **Repository defaults** | Org-level settings via API | N/A | Project-level settings |
+| Governance Intent                  | GitHub (Org-level)                         | Azure DevOps (Org-level)       | Azure DevOps (Project-level)                 |
+| ---------------------------------- | ------------------------------------------ | ------------------------------ | -------------------------------------------- |
+| **Require PRs for default branch** | `github_organization_ruleset`              | N/A                            | `azuredevops_branch_policy_min_reviewers`    |
+| **Min review count**               | Ruleset: `required_approving_review_count` | N/A                            | Branch policy: `minimum_reviewer_count`      |
+| **Dismiss stale reviews**          | Ruleset: `dismiss_stale_reviews_on_push`   | N/A                            | (Not directly supported)                     |
+| **Require status checks**          | Ruleset: `required_status_checks`          | N/A                            | `azuredevops_branch_policy_build_validation` |
+| **Agent/Runner pools**             | `github_actions_runner_group` (org)        | `azuredevops_agent_pool` (org) | `azuredevops_agent_queue` (project)          |
+| **Repository defaults**            | Org-level settings via API                 | N/A                            | Project-level settings                       |
 
 > **Key architectural difference:** GitHub allows org-level rulesets that cascade to all repos. Azure DevOps does not have org-level branch policies — they must be applied per-project. The DevOps LZ handles this by applying the `org_default_branch_rules` at project creation time in the `project_azuredevops` module.
 
@@ -1142,6 +1145,7 @@ resource "azuredevops_agent_pool" "org" {
 ### 10.1 Problem
 
 Today, onboarding a new project requires:
+
 1. Copy `terraform.tfvars.sample` → `terraform.tfvars`
 2. Fill in all values manually
 3. Run `terraform init` + `terraform apply`
@@ -1153,6 +1157,7 @@ For organizations with many projects (10+), this is error-prone and hard to audi
 Inspired by [github-gitops-samples](https://github.com/shigeyf/github-gitops-samples), the onboarding model uses a **GitOps governance repository** with an issue → PR → merge → provision pipeline:
 
 **Workflow steps (text description):**
+
 1. User creates an Issue using the project/repository request template.
 2. A GitHub Actions workflow parses the issue and generates a YAML project definition file.
 3. The workflow creates a Pull Request containing the YAML file.
@@ -1235,6 +1240,7 @@ The governance repo holds project definitions, the workflows that provision them
 
 > **Keeping IaC in sync with DevOps Landing Zone:**
 > The `infra/` directory contains the same `project_github`, `project_azuredevops`, and shared modules from the DevOps Landing Zone repo. Organizations should keep them in sync via one of:
+>
 > - **Git submodule**: `git submodule add <DevOps-Landing-Zone-repo> infra` — the GitOps repo references a pinned commit of the upstream.
 > - **Terraform module registry**: Publish modules to a private Terraform registry and reference them by version in the root modules.
 > - **Direct copy with version tracking**: Copy the modules and track the upstream version in a `VERSION` file.
@@ -1249,7 +1255,7 @@ Each project is defined by a YAML file in the `projects/` directory. This file s
 # projects/contoso-ecommerce.yaml
 project_name: contoso-ecommerce
 location: japaneast
-vcs_platform: github           # "github" or "azuredevops"
+vcs_platform: github # "github" or "azuredevops"
 network_mode: platform
 
 tags:
@@ -1259,24 +1265,24 @@ tags:
 repositories:
   - name: contoso-ecommerce-infra
     profile: infra
-    description: "Azure infrastructure for Contoso e-commerce"
+    description: 'Azure infrastructure for Contoso e-commerce'
   - name: contoso-ecommerce-api
     profile: app
-    description: "Backend API services"
+    description: 'Backend API services'
   - name: contoso-ecommerce-web
     profile: app
-    description: "Frontend web application"
+    description: 'Frontend web application'
     environments: [development, staging, production]
 
 subscriptions:
   features:
-    id: "11111111-1111-1111-1111-111111111111"
+    id: '11111111-1111-1111-1111-111111111111'
   development:
-    id: "22222222-2222-2222-2222-222222222222"
+    id: '22222222-2222-2222-2222-222222222222'
   staging:
-    id: "33333333-3333-3333-3333-333333333333"
+    id: '33333333-3333-3333-3333-333333333333'
   production:
-    id: "44444444-4444-4444-4444-444444444444"
+    id: '44444444-4444-4444-4444-444444444444'
 
 runners:
   use_self_hosted_runners: true
@@ -1289,8 +1295,8 @@ runners:
 # .github/ISSUE_TEMPLATE/project-request.yaml
 name: Project Creation Request
 description: Request the creation of a new DevOps Landing Zone project.
-title: "[New Project]: "
-labels: ["gitops-project-request"]
+title: '[New Project]: '
+labels: ['gitops-project-request']
 body:
   - type: input
     id: project-name
@@ -1324,7 +1330,7 @@ body:
     id: repositories
     attributes:
       label: Repositories
-      description: "One per line: name:profile:description"
+      description: 'One per line: name:profile:description'
       placeholder: |
         contoso-ecommerce-infra:infra:Azure infrastructure
         contoso-ecommerce-api:app:Backend API services
@@ -1335,7 +1341,7 @@ body:
     id: subscriptions
     attributes:
       label: Azure Subscriptions
-      description: "One per line: environment:subscription-id"
+      description: 'One per line: environment:subscription-id'
       placeholder: |
         development:22222222-2222-2222-2222-222222222222
         production:44444444-4444-4444-4444-444444444444
@@ -1362,7 +1368,7 @@ name: Provision DevOps Projects
 on:
   push:
     branches: [main]
-    paths: ["projects/**"]
+    paths: ['projects/**']
 
 jobs:
   detect-changes:
@@ -1382,7 +1388,7 @@ jobs:
   provision:
     needs: detect-changes
     if: needs.detect-changes.outputs.files != '[]'
-    runs-on: [self-hosted, devops-lz]   # runs on platform runner
+    runs-on: [self-hosted, devops-lz] # runs on platform runner
     strategy:
       fail-fast: false
       matrix:
@@ -1418,9 +1424,9 @@ This is **incremental** — Terraform's `for_each` over `repositories` ensures o
 
 The GitOps onboarding is **additive and optional**. The current manual workflow (`terraform.tfvars` + `terraform apply`) continues to work. Organizations can choose:
 
-| Approach | When to use |
-|----------|-------------|
-| **Manual** (`terraform.tfvars`) | Small teams, initial setup, one-off projects |
+| Approach                        | When to use                                                 |
+| ------------------------------- | ----------------------------------------------------------- |
+| **Manual** (`terraform.tfvars`) | Small teams, initial setup, one-off projects                |
 | **GitOps** (issue → PR → apply) | Enterprise, many projects, audit trail needed, self-service |
 
 > **Note:** The project YAML definitions in the GitOps repo are the **source of truth** when GitOps is used. They are the equivalent of `terraform.tfvars` but with a review/approval workflow built in.
@@ -1481,12 +1487,12 @@ Per-repo UAMI names use a **mixed** approach that balances readability and Azure
 uami-<project>-<repo>-<hash>
 ```
 
-| Segment | Source | Purpose |
-|---------|--------|---------|
-| `uami-` | Fixed prefix | Resource type identifier |
-| `<project>` | `var.project_name` | Human-readable project identification |
-| `<repo>` | Repository name from `repositories` list | Human-readable repo identification |
-| `<hash>` | `substr(sha256("<env>-<job_type>-<rand_id>"), 0, 8)` | Collision-resistant suffix encoding environment, job type, and random seed |
+| Segment     | Source                                               | Purpose                                                                    |
+| ----------- | ---------------------------------------------------- | -------------------------------------------------------------------------- |
+| `uami-`     | Fixed prefix                                         | Resource type identifier                                                   |
+| `<project>` | `var.project_name`                                   | Human-readable project identification                                      |
+| `<repo>`    | Repository name from `repositories` list             | Human-readable repo identification                                         |
+| `<hash>`    | `substr(sha256("<env>-<job_type>-<rand_id>"), 0, 8)` | Collision-resistant suffix encoding environment, job type, and random seed |
 
 **Key design decisions:**
 
@@ -1529,13 +1535,13 @@ locals {
 
 ### 12.1 Backward compatibility guarantees
 
-| Feature | Current behavior | New behavior | Breaking? |
-|---------|-----------------|--------------|-----------|
-| `repositories = []` | N/A | Falls back to single-repo using `project_name` | No |
-| `network_mode = "platform"` | Implicit | Explicit default | No |
-| `byo_vnet = null` | N/A | Ignored when `network_mode = "platform"` | No |
-| `shared_identities = true` | Implicit | Explicit default, same UAMI-per-env behavior | No |
-| LZ governance outputs | N/A | New outputs; projects can ignore them | No |
+| Feature                     | Current behavior | New behavior                                   | Breaking? |
+| --------------------------- | ---------------- | ---------------------------------------------- | --------- |
+| `repositories = []`         | N/A              | Falls back to single-repo using `project_name` | No        |
+| `network_mode = "platform"` | Implicit         | Explicit default                               | No        |
+| `byo_vnet = null`           | N/A              | Ignored when `network_mode = "platform"`       | No        |
+| `shared_identities = true`  | Implicit         | Explicit default, same UAMI-per-env behavior   | No        |
+| LZ governance outputs       | N/A              | New outputs; projects can ignore them          | No        |
 
 ### 12.2 Suggested migration steps
 
@@ -1570,18 +1576,18 @@ locals {
 
 ## 13. Decision Log (Resolved Questions)
 
-| # | Question | Options | Recommendation |
-|---|----------|---------|----------------|
-| 1 | Should the GitOps governance repo be created as part of the Platform LZ (Tier 1), or set up independently? | Part of LZ / Independent / Template repo | **✅ Decided:** Set up independently as a **template repository**. Creating a GitHub repo via Terraform is complex and fragile. The GitOps governance organization in GitHub Enterprise hosts both the **platform LZ repo** (LZ IaC) and the **GitOps governance repo** (project IaC). The governance repo must include `project_github`/`project_azuredevops` IaC modules (via git submodule or registry reference) so it is self-contained. |
-| 2 | Should BYO VNet be supported at the **LZ level** (the LZ itself uses an external VNet) or only at the **project level**? | LZ-level BYO / Project-level BYO / Both | **✅ Decided:** Start with **project-level BYO VNet**. LZ-level BYO is a larger change and can be added later. Repo-level BYO VNet (different VNets per repo within a project) is **not practical** — see Section 8.7 for analysis. |
-| 3 | How should per-repo identities be named to stay within Azure naming limits? | `uami-<project>-<repo>-<env>-<job>-<rand>` / Hash-based short names | **✅ Decided:** Mixed approach — `uami-<project>-<repo>-<hash>`. Project and repo names remain human-readable for identification; `<hash>` is a short hash derived from env + job type + random seed. No need for env/job to appear in the name — they are encoded in the hash for collision resistance while keeping the name within Azure's 128-char limit. See Section 11.3 for details. |
-| 4 | Should repository profiles be extensible by users or fixed? | Fixed set / User-defined profiles via HCL | **✅ Decided:** Start with a **fixed set** (`infra`, `app`, `library`, `docs`); allow user-defined extension later. The fixed set covers the vast majority of use cases. See Section 6.1 for profile definitions and design philosophy. |
-| 5 | Should the org-level ruleset be enforced or advisory? | `active` / `evaluate` (audit-only) | **✅ Decided:** Default to **`active`** (enforced) with bypass for org admins. Advisory mode (`evaluate`) can be used during rollout but the default should enforce branch protection. See Section 9.3 (`enforcement = "active"`, bypass for `OrganizationAdmin`). |
-| 6 | Should BYO VNet projects share the platform ACA Environment or create their own? | Shared / Per-project / Configurable | **✅ Decided:** **Per-project ACA Environment** in the BYO VNet. Sharing the platform ACA Environment is not possible when the project uses a different VNet — ACA Environment requires subnet delegation in the project's VNet. See Section 8.4 for network resolution logic. |
-| 7 | How to handle projects that need only a subset of environments (e.g., just dev + prod)? | Allow `subscriptions` to be a subset / Require all 4 | **✅ Decided:** **Allow subset** — only create environments for the subscriptions provided. The module creates GitHub Actions Environments, UAMIs, and federated identity credentials only for the environments present in `subscriptions`. See Section 6.7 for a sample `terraform.tfvars` with dev + prod only. |
-| 8 | For Azure DevOps, should the DevOps LZ always create a new ADO Project, or support referencing an existing one? | Always create / Reference existing / Both | **✅ Decided:** **Both** — the `create_project` variable already exists in the `azure_devops` module. When `create_project = false`, the module references an existing ADO project by name. See Section 7.3 for the variable definition. |
-| 9 | Should the GitOps provisioning workflow use GitHub-hosted runners or self-hosted runners? | GitHub-hosted / Self-hosted / Configurable | **✅ Decided:** **Self-hosted runners** (required for private network access to tfstate storage and Azure resources behind private endpoints). The provisioning workflow uses `runs-on: [self-hosted, devops-lz]`. See Section 10.6 for the workflow definition. |
-| 10 | How should Azure DevOps branch policies (project-scoped) be kept in sync with GitHub org-level rulesets when both are used? | Manual / Shared governance variables / Drift detection | **✅ Decided:** **Shared governance variables** in the Platform LZ (`org_default_branch_rules`), applied by each project module at project creation time. GitHub uses org-level rulesets; Azure DevOps applies the same rules as project-level branch policies. See Section 9.5 for the governance parity matrix. |
+| #   | Question                                                                                                                    | Options                                                             | Recommendation                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| --- | --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Should the GitOps governance repo be created as part of the Platform LZ (Tier 1), or set up independently?                  | Part of LZ / Independent / Template repo                            | **✅ Decided:** Set up independently as a **template repository**. Creating a GitHub repo via Terraform is complex and fragile. The GitOps governance organization in GitHub Enterprise hosts both the **platform LZ repo** (LZ IaC) and the **GitOps governance repo** (project IaC). The governance repo must include `project_github`/`project_azuredevops` IaC modules (via git submodule or registry reference) so it is self-contained. |
+| 2   | Should BYO VNet be supported at the **LZ level** (the LZ itself uses an external VNet) or only at the **project level**?    | LZ-level BYO / Project-level BYO / Both                             | **✅ Decided:** Start with **project-level BYO VNet**. LZ-level BYO is a larger change and can be added later. Repo-level BYO VNet (different VNets per repo within a project) is **not practical** — see Section 8.7 for analysis.                                                                                                                                                                                                           |
+| 3   | How should per-repo identities be named to stay within Azure naming limits?                                                 | `uami-<project>-<repo>-<env>-<job>-<rand>` / Hash-based short names | **✅ Decided:** Mixed approach — `uami-<project>-<repo>-<hash>`. Project and repo names remain human-readable for identification; `<hash>` is a short hash derived from env + job type + random seed. No need for env/job to appear in the name — they are encoded in the hash for collision resistance while keeping the name within Azure's 128-char limit. See Section 11.3 for details.                                                   |
+| 4   | Should repository profiles be extensible by users or fixed?                                                                 | Fixed set / User-defined profiles via HCL                           | **✅ Decided:** Start with a **fixed set** (`infra`, `app`, `library`, `docs`); allow user-defined extension later. The fixed set covers the vast majority of use cases. See Section 6.1 for profile definitions and design philosophy.                                                                                                                                                                                                       |
+| 5   | Should the org-level ruleset be enforced or advisory?                                                                       | `active` / `evaluate` (audit-only)                                  | **✅ Decided:** Default to **`active`** (enforced) with bypass for org admins. Advisory mode (`evaluate`) can be used during rollout but the default should enforce branch protection. See Section 9.3 (`enforcement = "active"`, bypass for `OrganizationAdmin`).                                                                                                                                                                            |
+| 6   | Should BYO VNet projects share the platform ACA Environment or create their own?                                            | Shared / Per-project / Configurable                                 | **✅ Decided:** **Per-project ACA Environment** in the BYO VNet. Sharing the platform ACA Environment is not possible when the project uses a different VNet — ACA Environment requires subnet delegation in the project's VNet. See Section 8.4 for network resolution logic.                                                                                                                                                                |
+| 7   | How to handle projects that need only a subset of environments (e.g., just dev + prod)?                                     | Allow `subscriptions` to be a subset / Require all 4                | **✅ Decided:** **Allow subset** — only create environments for the subscriptions provided. The module creates GitHub Actions Environments, UAMIs, and federated identity credentials only for the environments present in `subscriptions`. See Section 6.7 for a sample `terraform.tfvars` with dev + prod only.                                                                                                                             |
+| 8   | For Azure DevOps, should the DevOps LZ always create a new ADO Project, or support referencing an existing one?             | Always create / Reference existing / Both                           | **✅ Decided:** **Both** — the `create_project` variable already exists in the `azure_devops` module. When `create_project = false`, the module references an existing ADO project by name. See Section 7.3 for the variable definition.                                                                                                                                                                                                      |
+| 9   | Should the GitOps provisioning workflow use GitHub-hosted runners or self-hosted runners?                                   | GitHub-hosted / Self-hosted / Configurable                          | **✅ Decided:** **Self-hosted runners** (required for private network access to tfstate storage and Azure resources behind private endpoints). The provisioning workflow uses `runs-on: [self-hosted, devops-lz]`. See Section 10.6 for the workflow definition.                                                                                                                                                                              |
+| 10  | How should Azure DevOps branch policies (project-scoped) be kept in sync with GitHub org-level rulesets when both are used? | Manual / Shared governance variables / Drift detection              | **✅ Decided:** **Shared governance variables** in the Platform LZ (`org_default_branch_rules`), applied by each project module at project creation time. GitHub uses org-level rulesets; Azure DevOps applies the same rules as project-level branch policies. See Section 9.5 for the governance parity matrix.                                                                                                                             |
 
 ---
 
