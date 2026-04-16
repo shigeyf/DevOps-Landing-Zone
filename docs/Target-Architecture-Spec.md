@@ -461,6 +461,8 @@ Profiles define the **workflow shape** for a repository. They are defined in the
 | `library` | `features/*`, `main` | `build` + `test` on PR | `publish` on tag | — |
 | `docs` | `main` | — | — | — |
 
+> **Note:** The `docs` profile generates **no CI/CD workflows**. It creates the repository with default branch protection only. This profile is intended for documentation-only repos (wikis, ADRs, runbooks) that don't need build or deployment pipelines.
+
 ### 6.5 Identity (UAMI) allocation strategy
 
 #### Where identities are created
@@ -567,6 +569,40 @@ use_templates_repository = true
 use_self_hosted_runners  = true
 self_hosted_runners_type = "aca"
 ```
+
+### 6.7 Sample `terraform.tfvars` — subset environments (dev + prod only)
+
+```hcl
+# terraform.tfvars — Project with only development and production environments
+
+target_subscription_id = "00000000-0000-0000-0000-000000000000"
+project_name           = "contoso-internal-tool"
+location               = "japaneast"
+
+tags = {
+  appTag     = "contoso-internal-tool"
+  envTag     = "prod"
+  projectTag = "devops"
+}
+
+# Single repository (backward-compatible; repositories = [] uses project_name as repo name)
+
+# Only two environments — no features or staging
+subscriptions = {
+  "development" = {
+    id = "22222222-2222-2222-2222-222222222222"
+  },
+  "production" = {
+    id = "44444444-4444-4444-4444-444444444444"
+  },
+}
+
+network_mode = "platform"
+use_self_hosted_runners = true
+self_hosted_runners_type = "aca"
+```
+
+> **Note:** When `subscriptions` contains only a subset of environments, the module creates only the corresponding GitHub Actions Environments, UAMIs, and federated identity credentials. Branches and branch rules for missing environments (e.g., `features/*`, `staging`) are not created.
 
 ---
 
@@ -1031,6 +1067,15 @@ For organizations with many projects (10+), this is error-prone and hard to audi
 
 Inspired by [github-gitops-samples](https://github.com/shigeyf/github-gitops-samples), the onboarding model uses a **GitOps governance repository** with an issue → PR → merge → provision pipeline:
 
+**Workflow steps (text description):**
+1. User creates an Issue using the project/repository request template.
+2. A GitHub Actions workflow parses the issue and generates a YAML project definition file.
+3. The workflow creates a Pull Request containing the YAML file.
+4. CODEOWNERS-designated approvers review and approve the PR (this is the approval gate).
+5. The PR is merged to the main branch.
+6. A provisioning workflow detects the new YAML file and runs `terraform plan` + `terraform apply`.
+7. The project and its repositories are provisioned.
+
 ```mermaid
 flowchart LR
     A[User creates Issue] --> B[Issue Template:<br/>Project/Repo Request]
@@ -1224,7 +1269,10 @@ jobs:
           # ... convert YAML to terraform.tfvars
           cd infra/devops/project_${VCS_PLATFORM}
           terraform init -backend-config="key=projects/${PROJECT_NAME}.terraform.tfstate"
-          terraform apply -auto-approve
+          terraform plan -out=tfplan
+          # Note: The PR review/approval (CODEOWNERS) serves as the approval gate.
+          # Auto-approve is safe here because the plan was already reviewed via PR.
+          terraform apply tfplan
 ```
 
 ### 10.7 Adding repositories to an existing project
