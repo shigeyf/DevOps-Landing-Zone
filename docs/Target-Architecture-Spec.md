@@ -10,7 +10,7 @@
 
 1. [Motivation & Problem Summary](#1-motivation--problem-summary)
 2. [Target Hierarchy & Vocabulary](#2-target-hierarchy--vocabulary)
-3. [Bootstrap & State Management (Two-Tier)](#3-bootstrap--state-management-two-tier)
+3. [Bootstrap & State Management (Two-Layer)](#3-bootstrap--state-management-two-layer)
 4. [Module & Directory Structure (Target)](#4-module--directory-structure-target)
 5. [Organization-Level Landing Zone (`devops/lz`)](#5-organization-level-landing-zone-devopslz)
 6. [Project Definition & Multi-Repo Model](#6-project-definition--multi-repo-model)
@@ -29,21 +29,21 @@
 
 ### Current state
 
-| Area                       | Today                                                                | Gap                                                                                                                |
-| -------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| **Bootstrap**              | Single bootstrap creates Storage Account + Key Vault for tfstate     | Bootstrap only covers tfstate storage; no separate bootstrap for platform LZ resources (identity, network, agents) |
-| **Organization concept**   | GitHub org name is passed as a string; no governance boundary        | No formalized org-level resources, policies, or runner governance                                                  |
-| **Project model**          | 1 project = 1 main repo + optional templates repo                    | Real projects often have multiple repos (infra, app, data, ops, shared libs)                                       |
-| **GitHub vs Azure DevOps** | Separate code paths, no unified abstraction                          | GitHub lacks a "Project" concept that Azure DevOps has; no consistent governance model across both                 |
-| **Network / VNet**         | Platform always creates a new VNet from address-prefix inputs        | No option to plug into an existing (enterprise-provided) VNet                                                      |
-| **Portfolio onboarding**   | Each project provisioned via separate `terraform apply`              | No self-service or GitOps-driven onboarding pattern                                                                |
-| **Identities**             | UAMIs created per project; subscription mapping done at project time | No clarity on whether identities/subscriptions are pre-registered at the platform level or project level           |
-| **Documentation**          | Paths reference `infra/terraform/…` while code lives under `infra/…` | Confusing for adopters                                                                                             |
+| Area                       | Today                                                                | Gap                                                                                                                                     |
+| -------------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| **Bootstrap**              | Single bootstrap creates Storage Account + Key Vault for tfstate     | Bootstrap creates only Layer 1 (platform) state storage; no per-project Layer 2 state storage is provisioned for project teams' own IaC |
+| **Organization concept**   | GitHub org name is passed as a string; no governance boundary        | No formalized org-level resources, policies, or runner governance                                                                       |
+| **Project model**          | 1 project = 1 main repo + optional templates repo                    | Real projects often have multiple repos (infra, app, data, ops, shared libs)                                                            |
+| **GitHub vs Azure DevOps** | Separate code paths, no unified abstraction                          | GitHub lacks a "Project" concept that Azure DevOps has; no consistent governance model across both                                      |
+| **Network / VNet**         | Platform always creates a new VNet from address-prefix inputs        | No option to plug into an existing (enterprise-provided) VNet                                                                           |
+| **Portfolio onboarding**   | Each project provisioned via separate `terraform apply`              | No self-service or GitOps-driven onboarding pattern                                                                                     |
+| **Identities**             | UAMIs created per project; subscription mapping done at project time | No clarity on whether identities/subscriptions are pre-registered at the platform level or project level                                |
+| **Documentation**          | Paths reference `infra/terraform/…` while code lives under `infra/…` | Confusing for adopters                                                                                                                  |
 
 ### Goals
 
 1. Define a clear **Organization → Platform LZ → Project → Repository Set → Environments** hierarchy.
-2. Introduce a **two-tier bootstrap** model: one for tfstate infrastructure, one for platform LZ resources.
+2. Introduce a **two-layer state management** model: Layer 1 for platform/DevOps LZ state (bootstrap, LZ, project provisioning) and Layer 2 for per-project application IaC state (created during project provisioning).
 3. Allow a project to own **multiple repositories** with different profiles, while keeping single-repo as a valid option.
 4. Design a **unified abstraction layer** that accommodates both GitHub (no Project concept) and Azure DevOps (Org → Project → Repos).
 5. Support **"Bring Your Own VNet"** alongside the existing platform-managed VNet.
@@ -62,7 +62,7 @@
 │                                                                    │
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │  Bootstrap  (infra/_bootstrap)                              │  │
-│  │  • Storage Account (tfstate container for all layers)       │  │
+│  │  • Storage Account (Layer 1: platform tfstate container)    │  │
 │  │  • Key Vault (secrets for VCS PATs, etc.)                   │  │
 │  │  • Terraform state: local file → then migrated to azurerm   │  │
 │  └──────────────────────────────────────────────────────────────┘  │
@@ -124,35 +124,62 @@
 
 ---
 
-## 3. Bootstrap & State Management (Two-Tier)
+## 3. Bootstrap & State Management (Two-Layer)
 
 ### 3.1 Problem
 
-The current `_bootstrap` layer creates a Storage Account and Key Vault for managing Terraform state files. However, the Platform Landing Zone (`devops/lz`) creates significant Azure infrastructure (identity RG, agents RG, network RG, Dev Center) that also needs its own managed state.
+The current `_bootstrap` layer creates a Storage Account and Key Vault for managing Terraform state files. This storage (Layer 1) holds the state for the bootstrap itself, the Platform Landing Zone, and project provisioning modules (`project_github`, `project_azuredevops`).
 
-Today these are implicitly two separate concerns:
+However, projects provisioned via the DevOps Landing Zone may also use Terraform for their own application infrastructure (e.g., deploying Azure resources for the app). These project-level IaC states should **not** be stored in the platform's Layer 1 storage — they need their own per-project state storage (Layer 2), which is created during project provisioning.
 
-1. **Tier 0 — Tfstate Bootstrap** (`_bootstrap`): Creates the storage infrastructure to hold all Terraform state files.
-2. **Tier 1 — Platform LZ Bootstrap** (`devops/lz`): Creates organizational Azure resources (the "platform bootstrap") whose state is stored in the Tier 0 storage.
+Today this two-layer relationship is not made explicit.
 
-This two-tier relationship should be made explicit.
-
-### 3.2 Two-tier model
+### 3.2 Two-layer state management model
 
 ```text
 ┌─────────────────────────────────────────────────────────────────┐
-│ Tier 0: Tfstate Bootstrap  (infra/_bootstrap)                   │
+│ Layer 1: Platform State Storage                                  │
+│ (Created by _bootstrap — single Storage Account for the org)     │
+│                                                                 │
+│  Stores tfstate for:                                             │
+│    • Bootstrap itself      ("bootstrap.terraform.tfstate")       │
+│    • Platform LZ           ("devops-lz.terraform.tfstate")       │
+│    • Project provisioning  ("projects/<name>.terraform.tfstate") │
+│                                                                 │
+│  Also contains:                                                  │
+│    • Key Vault (PATs and secrets for LZ & project provisioning) │
+├─────────────────────────────────────────────────────────────────┤
+│ Layer 2: Per-Project State Storage  (one per project)            │
+│ (Created during project provisioning — project_github /          │
+│  project_azuredevops modules)                                    │
+│                                                                 │
+│  Stores tfstate for:                                             │
+│    • Project's own application IaC (e.g., Azure resources        │
+│      deployed by the project team via Terraform)                 │
+│                                                                 │
+│  Each project gets its own Storage Account for Layer 2,          │
+│  provisioned as part of the project's DevOps LZ resources.       │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 3.3 Operational tiers within Layer 1
+
+Within Layer 1, there are three operational tiers that determine the order of Terraform operations and state dependencies:
+
+```text
+┌─────────────────────────────────────────────────────────────────┐
+│ Tier 0: Tfstate Bootstrap  (infra/_bootstrap)                    │
 │                                                                 │
 │  terraform apply (local state → then migrate to azurerm)        │
 │  Creates:                                                       │
 │    • Resource Group for bootstrap                               │
-│    • Storage Account + "tfstate" container                      │
+│    • Storage Account + "tfstate" container  (= Layer 1 storage) │
 │    • Key Vault (for PATs and secrets)                           │
 │  Outputs:                                                       │
 │    • bootstrap.config.json (storage_account_name, etc.)         │
 │    • devops.azurerm.tfbackend (backend config template)         │
 │                                                                 │
-│  State key: "bootstrap.terraform.tfstate"                       │
+│  State key: "bootstrap.terraform.tfstate"  (in Layer 1)         │
 ├─────────────────────────────────────────────────────────────────┤
 │ Tier 1: Platform Landing Zone  (devops/lz)                      │
 │                                                                 │
@@ -168,7 +195,7 @@ This two-tier relationship should be made explicit.
 │    • devops_agents, devops_identity, devops_network,            │
 │      devops_devbox, container_specs, options, org_governance     │
 │                                                                 │
-│  State key: "devops-lz.terraform.tfstate"                       │
+│  State key: "devops-lz.terraform.tfstate"  (in Layer 1)         │
 │  Reads: bootstrap.config.json from Tier 0                       │
 ├─────────────────────────────────────────────────────────────────┤
 │ Tier 2: Projects  (devops/project_github or project_azuredevops)│
@@ -176,30 +203,39 @@ This two-tier relationship should be made explicit.
 │  terraform init -backend-config=...                             │
 │  terraform apply                                                │
 │  Reads: remote_state of Tier 1 (devops/lz)                     │
+│  Creates:                                                       │
+│    • VCS resources (repos, workflows, environments, etc.)       │
+│    • UAMIs + federated identity credentials                     │
+│    • Runners (ACA jobs or ACI)                                  │
+│    • DevBox project pool                                        │
+│    • Layer 2 Storage Account (for project's own IaC state)      │
 │                                                                 │
-│  State key: "projects/<project_name>.terraform.tfstate"         │
+│  State key: "projects/<project_name>.terraform.tfstate" (Layer 1)│
+│  Layer 2 storage: provisioned per project for app IaC state     │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 3.3 What stays the same
+### 3.4 What stays the same
 
-- The `_bootstrap` module (`infra/_bootstrap`) is unchanged. It already creates exactly the right resources.
-- The LZ (`devops/lz`) already reads `bootstrap.config.json` and stores its state in the bootstrap Storage Account.
+- The `_bootstrap` module (`infra/_bootstrap`) is unchanged. It already creates exactly the right resources for Layer 1.
+- The LZ (`devops/lz`) already reads `bootstrap.config.json` and stores its state in the Layer 1 Storage Account.
 - Projects already read LZ outputs via `terraform_remote_state`.
 
-### 3.4 What changes
+### 3.5 What changes
 
-The **conceptual documentation** should make the two-tier relationship explicit:
+The **conceptual documentation** should make the two-layer storage model explicit:
 
-1. **Tier 0** = `_bootstrap` — creates the "state management infrastructure" (Storage + Key Vault). This is the only layer that starts with local state and optionally migrates to azurerm.
+1. **Layer 1** = Platform state storage — a single Storage Account (created by `_bootstrap`) that holds the tfstate for:
+   - Bootstrap itself (`bootstrap.terraform.tfstate`)
+   - Platform LZ (`devops-lz.terraform.tfstate`)
+   - Project provisioning (`projects/<project_name>.terraform.tfstate`)
 
-2. **Tier 1** = `devops/lz` — acts as the "platform bootstrap" for organizational Azure resources. It is the first consumer of the Tier 0 storage. Its tfstate key should follow a well-known convention: `devops-lz.terraform.tfstate`.
+2. **Layer 2** = Per-project state storage — a separate Storage Account per project (created during project provisioning by `project_github` / `project_azuredevops`) that holds:
+   - The project team's own application IaC state (e.g., Terraform state for Azure resources deployed by the project)
 
-3. **Tier 2** = `devops/project_*` — per-project resources. Each project's tfstate key follows: `projects/<project_name>.terraform.tfstate`.
+Layer 1 is managed by the DevOps LZ platform team. Layer 2 is consumed by the project teams for their own infrastructure-as-code workflows.
 
-All three tiers store their state in the **same** Storage Account (created in Tier 0). The Key Vault in Tier 0 holds secrets consumed by Tier 1 and Tier 2.
-
-> **Note:** There is no need to create a second bootstrap module. The existing `_bootstrap` already serves as Tier 0. The key clarification is that `devops/lz` is Tier 1 — i.e., the **organizational platform bootstrap** — not just "another consumer." This distinction matters for operational runbooks: Tier 0 should be applied very rarely (essentially once), while Tier 1 is applied when the organization's platform configuration changes.
+> **Note:** Within Layer 1, the operational tiers (Tier 0 → Tier 1 → Tier 2) determine the order of `terraform apply` operations and state dependencies. Tier 0 should be applied very rarely (essentially once), Tier 1 is applied when the organization's platform configuration changes, and Tier 2 is applied when a new project is onboarded or modified. All three tiers store their state in the **same** Layer 1 Storage Account. Layer 2 is a separate Storage Account created per project during Tier 2 provisioning, intended for the project team's own use.
 
 ---
 
@@ -207,7 +243,7 @@ All three tiers store their state in the **same** Storage Account (created in Ti
 
 ```text
 infra/
-├── _bootstrap/                         # Tier 0: Tfstate storage + Key Vault
+├── _bootstrap/                         # Tier 0: Layer 1 state storage + Key Vault
 ├── _setup_subscriptions/               # (unchanged) resource provider registration
 ├── devops/
 │   ├── lz/                             # Tier 1: Organization-level Platform LZ
@@ -303,15 +339,15 @@ Additionally, the **GitOps governance repository** (for issue-driven project/rep
 
 ## 5. Organization-Level Landing Zone (`devops/lz`)
 
-### 5.1 Role: Platform Bootstrap (Tier 1)
+### 5.1 Role: Platform Bootstrap (Tier 1 within Layer 1)
 
 The Landing Zone serves as the **organizational platform bootstrap**. It is the first Terraform layer applied after Tier 0 (`_bootstrap`), and it creates all shared Azure and VCS resources that projects depend on.
 
 Operationally:
 
-- **Tier 0** (`_bootstrap`) is applied once and very rarely updated.
+- **Tier 0** (`_bootstrap`) is applied once and very rarely updated. Creates the Layer 1 Storage Account.
 - **Tier 1** (`devops/lz`) is applied whenever the organization's platform configuration changes (e.g., new subnets, new DevBox definitions, governance policy changes).
-- Both tiers store their state in the same Storage Account, under different state keys.
+- Both tiers store their state in the same Layer 1 Storage Account, under different state keys.
 
 ### 5.2 What stays the same
 
