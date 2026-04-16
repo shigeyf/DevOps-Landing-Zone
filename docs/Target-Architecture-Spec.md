@@ -1,8 +1,10 @@
 # Target Architecture Specification (DRAFT)
 
-> **Status:** Draft v0.2 — for discussion and feedback
+> **Status:** Draft v0.3 — for discussion and feedback
 >
-> **Scope:** Redesign of the DevOps Landing Zone to support real-world organizations, multi-repo projects, Bring Your Own VNet, GitOps-driven onboarding, and consistent governance across GitHub and Azure DevOps.
+> **Main Purpose:** Define and refine the correct **Organization → Project → Repository → Environment** (Org-Project-Repo-Env) resource hierarchy for the DevOps Landing Zone. Every gap, goal, and design decision in this document exists to achieve a clear, consistent mapping of this hierarchy to Azure resources, VCS platforms (GitHub / Azure DevOps), and Terraform state management.
+>
+> **Scope:** Based on the Org-Project-Repo-Env hierarchy, redesign the DevOps Landing Zone to correctly scope resources at each layer — organization-level shared infrastructure, project-level isolation, repository-level CI/CD workflows, and environment-level identity and deployment targets.
 
 ---
 
@@ -27,30 +29,54 @@
 
 ## 1. Motivation & Problem Summary
 
-### Current state
+### Main purpose: Defining the Org-Project-Repo-Env hierarchy
 
-| Area                       | Today                                                                | Gap                                                                                                                                     |
-| -------------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| **Bootstrap**              | Single bootstrap creates Storage Account + Key Vault for tfstate     | Bootstrap creates only Layer 1 (platform) state storage; no per-project Layer 2 state storage is provisioned for project teams' own IaC |
-| **Organization concept**   | GitHub org name is passed as a string; no governance boundary        | No formalized org-level resources, policies, or runner governance                                                                       |
-| **Project model**          | 1 project = 1 main repo + optional templates repo                    | Real projects often have multiple repos (infra, app, data, ops, shared libs)                                                            |
-| **GitHub vs Azure DevOps** | Separate code paths, no unified abstraction                          | GitHub lacks a "Project" concept that Azure DevOps has; no consistent governance model across both                                      |
-| **Network / VNet**         | Platform always creates a new VNet from address-prefix inputs        | No option to plug into an existing (enterprise-provided) VNet                                                                           |
-| **Portfolio onboarding**   | Each project provisioned via separate `terraform apply`              | No self-service or GitOps-driven onboarding pattern                                                                                     |
-| **Identities**             | UAMIs created per project; subscription mapping done at project time | No clarity on whether identities/subscriptions are pre-registered at the platform level or project level                                |
-| **Documentation**          | Paths reference `infra/terraform/…` while code lives under `infra/…` | Confusing for adopters                                                                                                                  |
+The primary objective of this document is to **define and refine the correct Organization → Project → Repository → Environment (Org-Project-Repo-Env) resource hierarchy** for the DevOps Landing Zone. Each layer in this hierarchy has a distinct responsibility:
 
-### Goals
+| Layer            | Responsibility                                                                                   | Terraform Scope                |
+| ---------------- | ------------------------------------------------------------------------------------------------ | ------------------------------ |
+| **Organization** | Shared infrastructure and governance used by all projects (ACR, Dev Center, VNet, DNS, rulesets) | `devops/lz` (Tier 1)           |
+| **Project**      | Logical grouping of repos, identities, runners, and network context for one product/workload     | `project_github` etc. (Tier 2) |
+| **Repository**   | Individual Git repo with profile-driven CI/CD workflows and optional per-repo identity           | Within project module          |
+| **Environment**  | Deployment target mapping 1:1 to an Azure subscription, UAMI, and GitHub/ADO environment         | Within project module          |
 
-1. Define a clear **Organization → Platform LZ → Project → Repository Set → Environments** hierarchy.
-2. Introduce a **two-layer state management** model: Layer 1 for platform/DevOps LZ state (bootstrap, LZ, project provisioning) and Layer 2 for per-project application IaC state (created during project provisioning).
+Every gap identified below, every goal, and every design decision in subsequent sections exists to ensure resources are **correctly scoped** to the right layer of this hierarchy.
+
+### Current state and gaps (analyzed by hierarchy layer)
+
+| Hierarchy Layer   | Area                       | Today                                                                | Gap (hierarchy violation or missing capability)                                                                                                                                     |
+| ----------------- | -------------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Organization**  | Org governance             | GitHub org name is passed as a string; no governance boundary        | No formalized org-level rulesets, runner groups, or repository defaults. Governance is ad-hoc at the project level.                                                                 |
+| **Organization**  | ACA Environment scoping    | ACA Environment created at Platform LZ, bound to platform VNet       | **Incorrectly scoped at org level.** Self-hosted runners must run in the project's VNet for proper resource deployment. ACA Environments should be project-scoped. See Section 5.2. |
+| **Organization**  | Identity RG                | Empty RG created at Platform LZ                                      | RG-only deployment is valid — it serves as a shared container for project UAMIs. Verified correct. See Section 5.2.                                                                 |
+| **Organization**  | Shared agents resources    | ACR, Log Analytics, container-run UAMI at platform level             | Correctly scoped. These are consumed by all projects.                                                                                                                               |
+| **Organization**  | Dev Center                 | Dev Center + definitions at platform level                           | Correctly scoped. DevBox project pools are created per project referencing org-level Dev Center.                                                                                    |
+| **Project**       | Project model              | 1 project = 1 main repo + optional templates repo                    | Real projects often have multiple repos (infra, app, data, ops, shared libs). No multi-repo support.                                                                                |
+| **Project**       | Network / VNet             | Platform always creates a new VNet from address-prefix inputs        | No option to plug into an existing (enterprise-provided) VNet at the project level. Self-hosted runners need to be in the project's VNet.                                           |
+| **Project**       | Layer 2 state storage      | Project creates blob containers in Layer 1 Storage Account           | **No separate per-project Storage Account (Layer 2) exists.** Current code (`blob.container.tf`) creates containers inside the bootstrap SA — not true Layer 2 isolation.           |
+| **Project**       | Azure DevOps module        | No `project_azuredevops` root module in the codebase                 | Only `project_github` exists. `project_azuredevops` is referenced in the document but not yet implemented.                                                                          |
+| **Repository**    | Repo → workflow mapping    | Single repo gets a fixed set of workflows                            | No concept of repository profiles. All repos get the same CI/CD shape regardless of purpose (infra vs app vs library).                                                              |
+| **Repository**    | Per-repo identity          | One UAMI set per project (shared across repos)                       | No option for per-repo UAMI for fine-grained RBAC (e.g., infra repo gets Contributor, app repo gets only AcrPush).                                                                  |
+| **Environment**   | Env → subscription mapping | Subscriptions mapped at project time; all 4 environments assumed     | No support for subset environments (e.g., dev + prod only). Projects must provide all 4 subscriptions.                                                                              |
+| **Environment**   | Identity strategy          | UAMIs created per environment × job type                             | Strategy works but is not clearly documented. No clarity on whether identities/subscriptions are pre-registered at platform vs project level.                                       |
+| **Cross-cutting** | Bootstrap state            | Single bootstrap creates Storage Account + Key Vault for tfstate     | Two-layer model (Layer 1 platform storage, Layer 2 per-project storage) is not explicit or implemented.                                                                             |
+| **Cross-cutting** | GitHub vs Azure DevOps     | Separate code paths, no unified abstraction                          | GitHub lacks a "Project" concept that Azure DevOps has; no consistent governance model across both.                                                                                 |
+| **Cross-cutting** | Portfolio onboarding       | Each project provisioned via separate `terraform apply`              | No self-service or GitOps-driven onboarding pattern.                                                                                                                                |
+| **Cross-cutting** | Documentation              | Paths reference `infra/terraform/…` while code lives under `infra/…` | Confusing for adopters.                                                                                                                                                             |
+
+### Goals (to achieve correct Org-Project-Repo-Env hierarchy)
+
+1. Define a clear **Organization → Platform LZ → Project → Repository Set → Environments** hierarchy, with each resource correctly scoped to its layer.
+2. Introduce a **two-layer state management** model: Layer 1 for platform/DevOps LZ state (bootstrap, LZ, project provisioning) and Layer 2 for per-project application IaC state (created during project provisioning as a separate Storage Account).
 3. Allow a project to own **multiple repositories** with different profiles, while keeping single-repo as a valid option.
 4. Design a **unified abstraction layer** that accommodates both GitHub (no Project concept) and Azure DevOps (Org → Project → Repos).
-5. Support **"Bring Your Own VNet"** alongside the existing platform-managed VNet.
-6. Strengthen **organization-level governance** for both GitHub and Azure DevOps.
-7. Provide a **GitOps-driven project/repository onboarding** pattern (issue → PR → provisioning).
-8. Clarify the **identity and subscription mapping** strategy.
-9. Provide a simple migration guide for V1 users to adopt the redesigned V2 architecture.
+5. Support **"Bring Your Own VNet"** at the project level, with self-hosted runners in the project's VNet.
+6. Move **ACA Environment** from org level to project level so that runner compute operates in the correct network context.
+7. Strengthen **organization-level governance** for both GitHub and Azure DevOps with platform-agnostic governance variables.
+8. Provide a **GitOps-driven project/repository onboarding** pattern (issue → PR → provisioning).
+9. Clarify the **identity and subscription mapping** strategy — UAMIs are project-scoped, subscriptions are declared per project, with optional per-repo identity isolation.
+10. Implement the `project_azuredevops` root module to achieve parity with `project_github`.
+11. Provide a simple migration guide for V1 users to adopt the redesigned V2 architecture.
 
 ---
 
@@ -1725,3 +1751,15 @@ The items below were identified during architecture and best-practice review. Th
    - **Action:** Move ACA Environment creation from `devops/lz` to `project_github` / `project_azuredevops` modules. Each project creates its own ACA Environment in the appropriate VNet (platform subnet for `network_mode = "platform"`, BYO subnet for `network_mode = "byo"`).
    - The Platform LZ continues to provide shared infrastructure consumed by project-level ACA Environments: ACR (images), Log Analytics (logging), container-run UAMI (image pull + secret access).
    - See Section 5.2 for the full resource-by-resource analysis.
+
+7. **Layer 2 state storage — implement separate per-project Storage Account (architecture follow-up):**
+   - Current code (`blob.container.tf` in `project_github`) creates blob containers (`{project_name}-tfstate`, `{project_name}-log`) inside the bootstrap (Layer 1) Storage Account. This is **not true Layer 2 isolation** — project teams' application IaC state shares the same Storage Account as platform state.
+   - **Action:** Create a dedicated Storage Account per project during project provisioning. This is the actual Layer 2 storage described in Section 3.2. The blob containers in the Layer 1 SA should remain only for platform-managed project provisioning state.
+
+8. **`project_azuredevops` root module — implement to achieve parity (architecture follow-up):**
+   - The codebase currently only has `infra/devops/project_github/`. The `project_azuredevops` module is referenced throughout this document and in the architecture hierarchy but does not exist yet.
+   - **Action:** Implement `infra/devops/project_azuredevops/` with the same Org-Project-Repo-Env hierarchy: ADO Project creation, repo provisioning, pipeline generation, service connection setup, UAMI federation, and environment management.
+
+9. **Subset environment support (architecture follow-up):**
+   - Current `project_github` assumes all environments are present in `subscriptions`. The workflow module generates environments for all 4 tiers (features, dev, staging, prod).
+   - **Action:** Allow `subscriptions` to contain only a subset of environments and generate only the corresponding GitHub Actions Environments, UAMIs, branches, and federated identity credentials.
