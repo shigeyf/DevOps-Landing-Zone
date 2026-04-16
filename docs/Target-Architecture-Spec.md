@@ -20,7 +20,8 @@
 10. [GitOps-Driven Project & Repository Onboarding](#10-gitops-driven-project--repository-onboarding)
 11. [Naming, State & Collision Resistance](#11-naming-state--collision-resistance)
 12. [Migration Path from Current Design](#12-migration-path-from-current-design)
-13. [Open Questions](#13-open-questions)
+13. [Decision Log (Resolved Questions)](#13-decision-log-resolved-questions)
+14. [Remaining Issues & Follow-up Notes](#14-remaining-issues--follow-up-notes)
 
 ---
 
@@ -75,7 +76,8 @@
 │  │    – DevBox Dev Center                                      │  │
 │  │  • VCS governance:                                          │  │
 │  │    – GitHub: Org-level rulesets, runner groups, teams        │  │
-│  │    – Azure DevOps: Org-level agent pools, policies          │  │
+│  │    – Azure DevOps: Org-level agent pools; branch policies    │  │
+│  │      are applied at project level                            │  │
 │  │  • Tfstate key: "devops-lz.terraform.tfstate"               │  │
 │  └──────────────────────────────────────────────────────────────┘  │
 │                                        ▼ (remote_state)            │
@@ -829,6 +831,34 @@ When `network_mode = "byo"`, the project module validates that:
 2. If `use_self_hosted_runners = true` and `self_hosted_runners_type = "aci"`, then `byo_vnet.container_instance_subnet_id` must be provided, and the subnet must have the `Microsoft.ContainerInstance/containerGroups` delegation.
 3. If `use_devbox = true`, then `byo_vnet.devbox_subnet_id` must be provided.
 
+These checks should be implemented as **enforceable Terraform validations/preconditions** (not documentation-only rules), by reading the BYO subnet configuration and asserting required delegations:
+
+```hcl
+data "azurerm_subnet" "byo_aca" {
+  count = var.network_mode == "byo" && var.use_self_hosted_runners && var.self_hosted_runners_type == "aca" ? 1 : 0
+  id    = var.byo_vnet.container_app_subnet_id
+}
+
+resource "terraform_data" "validate_byo_subnets" {
+  lifecycle {
+    precondition {
+      condition = (
+        var.network_mode != "byo" ||
+        !var.use_self_hosted_runners ||
+        var.self_hosted_runners_type != "aca" ||
+        contains(
+          flatten([for d in data.azurerm_subnet.byo_aca[0].delegation : [for s in d.service_delegation : s.name]]),
+          "Microsoft.App/environments"
+        )
+      )
+      error_message = "BYO ACA subnet must include Microsoft.App/environments delegation."
+    }
+  }
+}
+```
+
+Apply the same pattern for ACI (`Microsoft.ContainerInstance/containerGroups`) and DevBox subnet presence checks.
+
 ```hcl
 # New file: network.tf (in project_github)
 
@@ -1318,11 +1348,13 @@ body:
 On PR merge, the `project-create.yaml` workflow:
 
 1. Detects new/changed YAML files in `projects/`.
-2. For each new project definition:
+2. For each new or changed project definition:
    a. Converts the YAML to Terraform `tfvars` format.
    b. Runs `terraform init` with the appropriate backend config (state key: `projects/<project_name>.terraform.tfstate`).
-   c. Runs `terraform plan` and posts the plan output as a PR comment (for audit).
+   c. Runs `terraform plan` and stores plan output in workflow logs/artifacts for audit.
    d. Runs `terraform apply` using the self-hosted runner in the platform VNet (for private network access to the tfstate storage).
+
+> **Validation note:** Because this workflow runs on `push` to `main`, PR comments are not available in this job context. If plan feedback must be posted on PRs, add a separate `pull_request` validation workflow that runs `plan` before merge.
 
 ```yaml
 # .github/workflows/project-create.yaml (simplified)
@@ -1431,6 +1463,16 @@ Resources use a random 4-character suffix (`rand_id`) to avoid collisions. The n
 
    Users can override names in the `repositories` variable.
 
+4. **State key stability guardrail**: Use an immutable `project_id` (slug/UUID-like token) for backend keys, and keep `project_name` human-readable/display-only:
+
+   ```text
+   projects/<project_id>.terraform.tfstate
+   ```
+
+   - `project_id` is set once at project creation and must not change.
+   - If display name changes, no backend key change is required.
+   - If a legacy project must change backend key format, perform explicit `terraform init -migrate-state` as a controlled operation.
+
 ### 11.3 UAMI naming convention
 
 Per-repo UAMI names use a **mixed** approach that balances readability and Azure naming limits (128 chars max):
@@ -1526,7 +1568,7 @@ locals {
 
 ---
 
-## 13. Open Questions
+## 13. Decision Log (Resolved Questions)
 
 | # | Question | Options | Recommendation |
 |---|----------|---------|----------------|
@@ -1544,3 +1586,29 @@ locals {
 ---
 
 > **Next steps:** All open questions are resolved. Proceed with Phase 1 implementation (non-breaking variable additions).
+
+---
+
+## 14. Remaining Issues & Follow-up Notes
+
+The items below were identified during architecture and best-practice review. They are intentionally documented as follow-ups and are not blockers for Phase 1 variable additions.
+
+1. **Apply concurrency protection (architecture follow-up):**
+   - Add workflow/job `concurrency` keyed by project name (or tfstate key) to prevent overlapping applies to the same state file.
+   - Example intent: one in-flight apply per `projects/<project_name>.terraform.tfstate`.
+
+2. **Drift detection (architecture follow-up):**
+   - Add scheduled reconciliation (`terraform plan -detailed-exitcode`) against committed project definitions.
+   - Raise issue/alert when drift is detected.
+
+3. **Failure handling and rollback runbook (architecture follow-up):**
+   - Document partial-failure handling, retry behavior, and operator steps for safe recovery.
+   - Include lock handling and state consistency checks.
+
+4. **Action pinning (best-practice follow-up):**
+   - Pin critical GitHub Actions by full commit SHA for supply-chain hardening.
+   - Keep an update policy for rotating pinned SHAs.
+
+5. **Production deployment guardrails (best-practice follow-up):**
+   - Use environment protection/manual approvals for production applies, in addition to CODEOWNERS review.
+   - Document emergency bypass and audit requirements.
