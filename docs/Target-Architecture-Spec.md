@@ -1,10 +1,12 @@
 # Target Architecture Specification (DRAFT)
 
-> **Status:** Draft v0.3 — for discussion and feedback
+> **Status:** Draft v0.4 — deep technical review applied (current vs. proposed clearly separated)
 >
 > **Main Purpose:** Define and refine the correct **Organization → Project → Repository → Environment** (Org-Project-Repo-Env) resource hierarchy for the DevOps Landing Zone. Every gap, goal, and design decision in this document exists to achieve a clear, consistent mapping of this hierarchy to Azure resources, VCS platforms (GitHub / Azure DevOps), and Terraform state management.
 >
 > **Scope:** Based on the Org-Project-Repo-Env hierarchy, redesign the DevOps Landing Zone to correctly scope resources at each layer — organization-level shared infrastructure, project-level isolation, repository-level CI/CD workflows, and environment-level identity and deployment targets.
+>
+> **Reading guide:** Sections 1–5 describe the current architecture, gap analysis, and organization-level resource evaluation. Sections 6–11 describe the **target architecture** — proposed features marked with notes where they differ from the current implementation. Section 12 outlines the migration path and Section 14 tracks remaining implementation work.
 
 ---
 
@@ -57,7 +59,7 @@ Every gap identified below, every goal, and every design decision in subsequent 
 | **Project**       | Azure DevOps module        | No `project_azuredevops` root module in the codebase                 | Only `project_github` exists. `project_azuredevops` is referenced in the document but not yet implemented.                                                                          |
 | **Repository**    | Repo → workflow mapping    | Single repo gets a fixed set of workflows                            | No concept of repository profiles. All repos get the same CI/CD shape regardless of purpose (infra vs app vs library).                                                              |
 | **Repository**    | Per-repo identity          | One UAMI set per project (shared across repos)                       | No option for per-repo UAMI for fine-grained RBAC (e.g., infra repo gets Contributor, app repo gets only AcrPush).                                                                  |
-| **Environment**   | Env → subscription mapping | Subscriptions mapped at project time; all 4 environments assumed     | No support for subset environments (e.g., dev + prod only). Projects must provide all 4 subscriptions.                                                                              |
+| **Environment**   | Env → subscription mapping | Subscriptions variable is flexible (`default = {}`); subscription-level role assignments are conditional via `lookup()` | GitHub environments, UAMIs, branches, and federated credentials are always created for all 4 hardcoded tiers (features, development, staging, production) regardless of which subscriptions are provided. Only subscription-level role assignments are skipped for missing entries. True subset environment support (create only the environments present in `subscriptions`) is not implemented. |
 | **Environment**   | Identity strategy          | UAMIs created per environment × job type                             | Strategy works but is not clearly documented. No clarity on whether identities/subscriptions are pre-registered at platform vs project level.                                       |
 | **Cross-cutting** | Bootstrap state            | Single bootstrap creates Storage Account + Key Vault for tfstate     | Two-layer model (Layer 1 platform storage, Layer 2 per-project storage) is not explicit or implemented.                                                                             |
 | **Cross-cutting** | GitHub vs Azure DevOps     | Separate code paths, no unified abstraction                          | GitHub lacks a "Project" concept that Azure DevOps has; no consistent governance model across both.                                                                                 |
@@ -95,15 +97,17 @@ Every gap identified below, every goal, and every design decision in subsequent 
 │                                        ▼ (tfstate → azurerm)       │
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │  Platform Landing Zone  (devops/lz)                         │  │
-│  │  • Platform bootstrap: create Azure resources for the org   │  │
-│  │    – Shared identity RG (UAMIs)                             │  │
-│  │    – Shared agents RG (ACR, Log Analytics, container-run UAMI)│  │
-│  │    – Network RG  (platform-managed VNet OR hub resources)   │  │
-│  │    – DevBox Dev Center                                      │  │
-│  │  • VCS governance:                                          │  │
-│  │    – GitHub: Org-level rulesets, runner groups, teams        │  │
-│  │    – Azure DevOps: Org-level agent pools; branch policies    │  │
-│  │      are applied at project level                            │  │
+│  │  • Shared Azure resources for the org:                      │  │
+│  │    – Identity RG (shared container for project UAMIs)       │  │
+│  │    – Agents RG (ACR, Log Analytics, container-run UAMI,     │  │
+│  │      ACA Environment*)                                      │  │
+│  │    – Network RG (platform-managed VNet, subnets, DNS, NAT)  │  │
+│  │    – DevBox Dev Center + definitions                        │  │
+│  │    – Bootstrap KV secrets (VCS PATs)                        │  │
+│  │  • VCS governance (proposed — not yet implemented):         │  │
+│  │    – GitHub: Org-level rulesets, runner groups               │  │
+│  │    – Azure DevOps: Org-level agent pools                    │  │
+│  │  * ACA Env should be moved to project level — see §5.2     │  │
 │  │  • Tfstate key: "devops-lz.terraform.tfstate"               │  │
 │  └──────────────────────────────────────────────────────────────┘  │
 │                                        ▼ (remote_state)            │
@@ -141,7 +145,7 @@ Every gap identified below, every goal, and every design decision in subsequent 
 | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Organization**          | The top-level governance boundary — maps to a GitHub Organization or Azure DevOps Organization. Owns shared infrastructure and policies.                                                                                                                                                                                                                                                                                                                        |
 | **Bootstrap**             | The foundational `_bootstrap` layer that creates the Storage Account (for tfstate) and Key Vault (for secrets). Runs once, produces a `bootstrap.config.json` consumed by all subsequent layers.                                                                                                                                                                                                                                                                |
-| **Platform Landing Zone** | The shared infrastructure layer (`devops/lz`) provisioned once per organization. Creates Azure resource groups (identity, agents, network, DevBox) and VCS governance resources. Org-scoped resources include ACR, Log Analytics, container-run UAMI, Dev Center, platform VNet, and governance rulesets. Its own tfstate is stored in the bootstrap Storage Account. ACA Environments for runners are created at the project level, not at the platform level. |
+| **Platform Landing Zone** | The shared infrastructure layer (`devops/lz`) provisioned once per organization. Creates Azure resource groups (identity, agents, network, DevBox) and shared compute/registry resources. Org-scoped resources **currently implemented** include: ACR, Log Analytics, container-run UAMI, ACA Environment, Dev Center, platform VNet, and private DNS zones. VCS governance resources (org-level rulesets, runner groups) are **proposed** (see Section 9) but not yet implemented. The ACA Environment is **currently** created at the platform level (see Section 5.2 for analysis of why it should be moved to project level). Its own tfstate is stored in the bootstrap Storage Account. |
 | **Project**               | A logical grouping of repositories, environments, identities, and runner jobs that together deliver one product or workload. In GitHub, a project is a naming-convention-based grouping of repos within the flat org. In Azure DevOps, a project maps to an actual Azure DevOps Project container.                                                                                                                                                              |
 | **Repository Set**        | The ordered list of Git repositories that belong to a project. Each repo has a **profile** that determines its CI/CD workflow shape.                                                                                                                                                                                                                                                                                                                            |
 | **Repository Profile**    | A template that defines the branch strategy, workflow files, environments, and identity needs for a class of repository (e.g., `infra`, `app`, `library`). Profiles are a **recommendation** — users can place infra and app code in a single repo if they prefer.                                                                                                                                                                                              |
@@ -213,13 +217,14 @@ Within Layer 1, there are three operational tiers that determine the order of Te
 │  terraform apply                                                │
 │  Creates:                                                       │
 │    • Identity RG + container-run UAMI                           │
-│    • Agents RG + ACR + Log Analytics                            │
+│    • Agents RG + ACR + Log Analytics + ACA Environment          │
 │    • Network RG + VNet + subnets + DNS zones + NAT GW           │
 │    • DevBox Dev Center + definitions                            │
-│    • VCS governance (GitHub rulesets, ADO policies, etc.)        │
+│    • Bootstrap KV secrets (VCS PATs)                            │
+│    • (Proposed) VCS governance — not yet implemented            │
 │  Outputs:                                                       │
 │    • devops_agents, devops_identity, devops_network,            │
-│      devops_devbox, container_specs, options, org_governance     │
+│      devops_devbox, container_specs, options                    │
 │                                                                 │
 │  State key: "devops-lz.terraform.tfstate"  (in Layer 1)         │
 │  Reads: bootstrap.config.json from Tier 0                       │
@@ -229,16 +234,17 @@ Within Layer 1, there are three operational tiers that determine the order of Te
 │  terraform init -backend-config=...                             │
 │  terraform apply                                                │
 │  Reads: remote_state of Tier 1 (devops/lz)                     │
-│  Creates:                                                       │
+│  Creates (current):                                             │
 │    • VCS resources (repos, workflows, environments, etc.)       │
 │    • UAMIs + federated identity credentials                     │
-│    • ACA Environment (in platform VNet or BYO VNet)             │
-│    • Runners (ACA jobs or ACI)                                  │
+│    • Runners (ACA jobs using LZ's ACA Env, or ACI)             │
+│    • Blob containers in Layer 1 SA (project tfstate + logs)     │
 │    • DevBox project pool                                        │
-│    • Layer 2 Storage Account (for project's own IaC state)      │
+│  Creates (proposed — not yet implemented):                      │
+│    • ACA Environment per project (moved from LZ)               │
+│    • Layer 2 Storage Account (separate per-project SA)          │
 │                                                                 │
 │  State key: "projects/<project_name>.terraform.tfstate" (Layer 1)│
-│  Layer 2 storage: provisioned per project for app IaC state     │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -393,7 +399,7 @@ Each resource created by the Platform LZ must be evaluated for whether it truly 
 | **Private Endpoints (bootstrap)** | Platform (org) | **Platform (org)** ✅ | Private endpoints to the bootstrap Storage Account and Key Vault are org-level resources. Correctly scoped.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | **Dev Center**                    | Platform (org) | **Platform (org)** ✅ | The Dev Center is a singleton org-level resource. DevBox definitions (images, SKUs) are defined here and shared across all projects. DevBox project pools are created at the project level referencing the org-level Dev Center. Correctly scoped.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | **Container image build tasks**   | Platform (org) | **Platform (org)** ✅ | ACR tasks for building runner container images. Shared across all projects. Correctly scoped.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| **VCS governance resources**      | Platform (org) | **Platform (org)** ✅ | Org-level rulesets (GitHub) and agent pools (Azure DevOps) are correctly scoped at the organization level.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| **VCS governance resources**      | Platform (org) | **Platform (org)** ⚠️ | Org-level rulesets (GitHub) and agent pools (Azure DevOps) belong at the platform level, but **no governance resources are currently implemented in `devops/lz`**. No rulesets, runner groups, or agent pools are created today. Governance implementation is proposed in Section 9 but remains a gap.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 #### Key finding: ACA Environment should be project-scoped
 
@@ -443,15 +449,18 @@ The Identity RG pattern (empty org-level RG, populated at project time) is valid
 - Network resource group and platform-managed VNet creation
 - Dev Center and DevBox definitions
 - Container image build tasks
-- VCS governance resources (org-level rulesets, runner groups, agent pools)
 
-### 5.4 What changes
+> **Note:** "What stays the same" refers to resources that remain at the organization level. The items listed above already exist in the LZ code. VCS governance resources (org-level rulesets, runner groups, agent pools) are **proposed** for the org level (Section 9) but are not yet implemented in `devops/lz`.
 
-#### 5.4.1 ACA Environment moved to project level (CHANGED)
+### 5.4 What changes (proposed)
 
-The ACA Environment is no longer created by the Platform LZ. Instead, each project module creates its own ACA Environment in the appropriate VNet. See Section 5.2 for the full rationale.
+> **Note:** The changes below describe the **target architecture**. They are not yet implemented in the codebase. See Section 14 (Remaining Issues) for the implementation status of each item.
 
-#### 5.4.2 Governance outputs (NEW)
+#### 5.4.1 ACA Environment moved to project level (PROPOSED)
+
+The ACA Environment should be moved from the Platform LZ to the project module. Each project module would create its own ACA Environment in the appropriate VNet. **Currently**, the ACA Environment is created by the Platform LZ and consumed by the project module via `container_app_environment_id` from remote state. See Section 5.2 for the full rationale.
+
+#### 5.4.2 Governance outputs (PROPOSED)
 
 The LZ will expose organizational governance settings that projects inherit:
 
@@ -493,10 +502,12 @@ variable "org_repository_defaults" {
 }
 ```
 
-#### 5.4.3 New outputs for project consumption
+#### 5.4.3 Proposed new outputs for project consumption
+
+> **Note:** The outputs below are **proposed additions**. The current `devops/lz/_outputs.tf` exports `devops_agents`, `devops_identity`, `devops_network`, `devops_devbox`, `container_specs`, and `options`. The `org_governance` and `network_mode_info` outputs shown here do not yet exist.
 
 ```hcl
-# Additions to devops/lz/_outputs.tf
+# Proposed additions to devops/lz/_outputs.tf
 
 output "org_governance" {
   value = {
@@ -525,6 +536,8 @@ output "network_mode_info" {
 ---
 
 ## 6. Project Definition & Multi-Repo Model
+
+> **Note:** Sections 6.3–6.7 describe the **target design** for multi-repo support, repository profiles, per-repo identities, and subset environments. **Currently**, the `project_github` module supports only a single main repo + optional templates repo (Section 6.2), with a single hardcoded `infra`-style workflow profile and one UAMI per environment × job type (plan/apply) shared across repos.
 
 ### 6.1 Design philosophy: Separation is a recommendation, not a mandate
 
@@ -629,16 +642,24 @@ UAMIs are **created at project deployment time** (Tier 2), not pre-registered at
 
 The subscription-to-environment mapping is defined in each project's `terraform.tfvars` via the `subscriptions` variable. The Platform LZ does **not** maintain a global subscription registry. Each project declares which Azure subscriptions it needs for its environments, and the project module creates UAMIs and federated identity credentials accordingly.
 
+**Current implementation detail:** The `github_workflows` module generates a `github_environments` map keyed by `{branch_key}-{job_type}` (e.g., `feat-plan`, `dev-apply`, `stg-plan`, `prod-apply`). The project module creates one UAMI per entry — currently 7 UAMIs per project (4 environments × plan + 3 environments × apply, since `features` has no `apply` job). Each UAMI receives a single federated identity credential for GitHub OIDC.
+
 ```text
 Platform LZ (Tier 1)                Project (Tier 2)
 ┌─────────────────────┐             ┌──────────────────────────────┐
 │ Creates:            │             │ Reads:                       │
 │ • identity RG       │────────────►│ • identity RG name from LZ   │
 │   (empty at first)  │             │                              │
-│                     │             │ Creates:                     │
-│                     │             │ • UAMI per env × job type    │
-│                     │             │ • Federated identity creds   │
+│                     │             │ Creates (current):           │
+│                     │             │ • 7 UAMIs (env × job type)   │
+│                     │             │   feat-plan, dev-plan,       │
+│                     │             │   stg-plan, prod-plan,       │
+│                     │             │   dev-apply, stg-apply,      │
+│                     │             │   prod-apply                 │
+│                     │             │ • 7 Federated identity creds │
 │                     │             │ • Role assignments on subs   │
+│                     │             │   (only for envs in          │
+│                     │             │    subscriptions map)         │
 │                     │             │                              │
 │                     │             │ Subscription map comes from: │
 │                     │             │ • project's terraform.tfvars │
@@ -771,11 +792,13 @@ use_self_hosted_runners = true
 self_hosted_runners_type = "aca"
 ```
 
-> **Note:** When `subscriptions` contains only a subset of environments, the module creates only the corresponding GitHub Actions Environments, UAMIs, and federated identity credentials. Branches and branch rules for missing environments (e.g., `features/*`, `staging`) are not created.
+> **Note (target behavior):** This sample shows the intended subset environment support described in Decision #7. **Currently**, the `github_workflows` module hardcodes all 4 environments (features, development, staging, production) and the project module creates GitHub Actions Environments, UAMIs, and federated credentials for all of them regardless of which subscriptions are provided. Subscription-level role assignments are already conditional (only created for subscriptions present in the map), but full subset support — creating only the matching environments, UAMIs, branches, and credentials — is not yet implemented. See Remaining Issue #9.
 
 ---
 
 ## 7. GitHub vs Azure DevOps — Structural Differences & Abstraction
+
+> **Note:** The unified interface described in Sections 7.2–7.4 is the **target design**. Currently, only `project_github` exists. The `project_azuredevops` module and the shared interface have not been implemented. See Remaining Issue #8.
 
 ### 7.1 The structural mismatch
 
@@ -879,6 +902,8 @@ This mapping is implemented in separate files (`governance.github.tf` and `gover
 ---
 
 ## 8. Bring Your Own VNet (BYO VNet)
+
+> **Note:** BYO VNet support is a **proposed feature**. The current `project_github` module does not have a `network_mode` or `byo_vnet` variable. All projects currently use the platform-managed VNet created by `devops/lz`. The design below describes the target architecture.
 
 ### 8.1 Problem
 
@@ -1126,6 +1151,8 @@ use_devbox               = false
 
 ## 9. Organization-Level Governance (GitHub & Azure DevOps)
 
+> **Note:** This entire section describes **proposed governance features**. No governance resources (rulesets, runner groups, agent pools, repository defaults) are currently created by `devops/lz`. The current LZ only stores GitHub PATs and Azure DevOps PATs in the bootstrap Key Vault as secrets. Branch protection rules are created at the project level by the `github_workflows` module.
+
 ### 9.1 Current gaps
 
 - Branch protection rules are only defined at the project level inside `github_workflows`.
@@ -1268,6 +1295,8 @@ resource "azuredevops_agent_pool" "org" {
 ---
 
 ## 10. GitOps-Driven Project & Repository Onboarding
+
+> **Note:** This section describes a **proposed** GitOps onboarding workflow. It is not yet implemented. Currently, projects are onboarded manually by creating `terraform.tfvars` and running `terraform apply`.
 
 ### 10.1 Problem
 
@@ -1761,5 +1790,9 @@ The items below were identified during architecture and best-practice review. Th
    - **Action:** Implement `infra/devops/project_azuredevops/` with the same Org-Project-Repo-Env hierarchy: ADO Project creation, repo provisioning, pipeline generation, service connection setup, UAMI federation, and environment management.
 
 9. **Subset environment support (architecture follow-up):**
-   - Current `project_github` assumes all environments are present in `subscriptions`. The workflow module generates environments for all 4 tiers (features, dev, staging, prod).
-   - **Action:** Allow `subscriptions` to contain only a subset of environments and generate only the corresponding GitHub Actions Environments, UAMIs, branches, and federated identity credentials.
+   - The `subscriptions` variable in `project_github` already accepts a flexible map (`default = {}`), and subscription-level role assignments are conditional (via `lookup()` — only created for subscriptions present in the map). However, the `github_workflows` module hardcodes all 4 environments (features, development, staging, production) in `_locals.env.tf`, and the project module creates GitHub Actions Environments, UAMIs, and federated identity credentials for all 7 env × job combinations regardless of which subscriptions are provided.
+   - **Action:** Modify the `github_workflows` module to accept a list of active environments (derived from the keys of `subscriptions`) and generate only the corresponding GitHub Actions Environments, UAMIs, branches, branch rules, and federated identity credentials. Environments without a matching subscription entry should not create any resources.
+
+10. **VCS governance implementation — org-level rulesets, runner groups, and repository defaults (architecture follow-up):**
+    - No governance resources are currently created by `devops/lz`. The LZ only stores VCS PATs in the bootstrap Key Vault. Branch protection rules exist at the project level inside the `github_workflows` module, but there are no org-level rulesets, runner groups, agent pools, or repository default settings.
+    - **Action:** Implement governance resources in `devops/lz` as described in Section 9: platform-agnostic governance variables (`org_default_branch_rules`, `org_runner_group_defaults`, `org_repository_defaults`) mapped to GitHub org-level rulesets and Azure DevOps org-level policies. Export via `org_governance` output for project modules to inherit.
