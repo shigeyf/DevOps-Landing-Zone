@@ -216,10 +216,10 @@ output "network_mode_info" {
     platform_vnet_id                = length(module.vnet) > 0 ? module.vnet[0].output.vnet_id : null
     platform_vnet_name              = length(module.vnet) > 0 ? local.vnet_name : null
     platform_vnet_resource_group    = local.enable_network_resources ? local.network_resource_group_name : null
-    platform_private_endpoint_subnet_id  = local.private_endpoint_subnet_id
-    platform_aca_subnet_id               = local.container_app_subnet_id
-    platform_aci_subnet_id               = local.container_instance_subnet_id
-    platform_devbox_subnet_id            = local.devbox_subnet_id
+    private_endpoint_subnet_id  = local.private_endpoint_subnet_id
+    aca_subnet_id               = local.container_app_subnet_id
+    aci_subnet_id               = local.container_instance_subnet_id
+    devbox_subnet_id            = local.devbox_subnet_id
     private_dns_zone_ids            = { for index, z in azurerm_private_dns_zone.this : index => z.id }
   }
   description = "Network information for projects using platform or BYO networking"
@@ -486,7 +486,8 @@ locals {
   effective_private_endpoint_subnet_id = (
     var.network_mode == "byo"
     ? var.byo_vnet.private_endpoint_subnet_id
-    : local._devops_outputs.devops_network.private_endpoint_subnet_id
+    # Note: private_endpoint_subnet_id is a new field added to the LZ devops_network output
+    : try(local._devops_outputs.devops_network.private_endpoint_subnet_id, null)
   )
 
   effective_aca_subnet_id = (
@@ -640,7 +641,7 @@ resource "github_organization_ruleset" "baseline" {
   bypass_actors {
     actor_id    = 0   # Organization admin
     actor_type  = "OrganizationAdmin"
-    bypass_mode = "always"
+    bypass_mode = "pull_request"  # admins must use PRs but can bypass in emergencies
   }
 }
 ```
@@ -728,8 +729,8 @@ subscriptions:
   production:
     id: "44444444-..."
 runners:
-  use_self_hosted: true
-  type: aca
+  use_self_hosted_runners: true
+  self_hosted_runners_type: aca
 ```
 
 The catalog controller:
@@ -755,8 +756,8 @@ module "project" {
   subscriptions          = each.value.subscriptions
   network_mode           = lookup(each.value, "network_mode", "platform")
   byo_vnet               = lookup(each.value, "byo_vnet", null)
-  use_self_hosted_runners = lookup(each.value.runners, "use_self_hosted", true)
-  self_hosted_runners_type = lookup(each.value.runners, "type", "aca")
+  use_self_hosted_runners  = lookup(each.value.runners, "use_self_hosted_runners", true)
+  self_hosted_runners_type = lookup(each.value.runners, "self_hosted_runners_type", "aca")
   target_subscription_id  = var.target_subscription_id
 }
 ```
