@@ -67,7 +67,6 @@ Microsoft.Maintenance
 Microsoft.ManagedServices
 Microsoft.Management
 Microsoft.Maps
-Microsoft.MixedReality
 Microsoft.Monitor
 Microsoft.NotificationHubs
 Microsoft.OperationalInsights
