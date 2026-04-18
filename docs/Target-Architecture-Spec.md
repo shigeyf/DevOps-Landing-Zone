@@ -1,12 +1,14 @@
 # Target Architecture Specification (DRAFT)
 
+[English](./Target-Architecture-Spec.md) | [日本語](./Target-Architecture-Spec.ja.md)
+
 > **Status:** Draft — planning phase (target architecture definition).
 >
 > **Main Purpose:** Define and refine the correct **Organization → Project → Repository → Environment** (Org-Project-Repo-Env) resource hierarchy for the DevOps Landing Zone. Every gap, goal, and design decision in this document exists to achieve a clear, consistent mapping of this hierarchy to Azure resources, VCS platforms (GitHub / Azure DevOps), and Terraform state management.
 >
 > **Scope:** Based on the Org-Project-Repo-Env hierarchy, redesign the DevOps Landing Zone to correctly scope resources at each layer — organization-level shared infrastructure, project-level isolation, repository-level CI/CD workflows, and environment-level identity and deployment targets.
 >
-> **Reading guide:** Sections 1–5 describe the current architecture, gap analysis, and organization-level resource evaluation. Sections 6–11 — together with the target-architecture subsections **§5.4** (ACA Environment refactor, governance outputs) and **§8.0** (three-tier VNet model and BYO/platform consistency rules) — describe the **target architecture**; items that differ from the current implementation are flagged inline. Section 12 outlines the migration path.
+> **Reading guide:** This document covers the architecture overview (as-is state, gaps, target goals, resource tables, module structure, and migration path). Detailed design decisions are documented in separate [Architecture Decision Records (ADRs)](#architecture-decision-records-adrs) — one per topic area.
 
 ---
 
@@ -16,15 +18,9 @@
 2. [Target Hierarchy & Vocabulary](#2-target-hierarchy--vocabulary)
 3. [Bootstrap & State Management (Two-Layer)](#3-bootstrap--state-management-two-layer)
 4. [Module & Directory Structure (Target)](#4-module--directory-structure-target)
-5. [Organization-Level Landing Zone (`devops/lz`)](#5-organization-level-landing-zone-devopslz)
-6. [Project Definition & Multi-Repo Model](#6-project-definition--multi-repo-model)
-7. [GitHub vs Azure DevOps — Structural Differences & Abstraction](#7-github-vs-azure-devops--structural-differences--abstraction)
-8. [Bring Your Own VNet (BYO VNet)](#8-bring-your-own-vnet-byo-vnet)
-9. [Organization-Level Governance (GitHub & Azure DevOps)](#9-organization-level-governance-github--azure-devops)
-10. [GitOps-Driven Project & Repository Onboarding](#10-gitops-driven-project--repository-onboarding)
-11. [Naming, State & Collision Resistance](#11-naming-state--collision-resistance)
-12. [Migration Path from Current Design](#12-migration-path-from-current-design)
-13. [Decision Log (Resolved Questions)](#13-decision-log-resolved-questions)
+5. [Architecture Decision Records (ADRs)](#architecture-decision-records-adrs)
+6. [Migration Path from Current Design](#5-migration-path-from-current-design)
+7. [Decision Log (Resolved Questions)](#6-decision-log-resolved-questions)
 
 ---
 
@@ -45,25 +41,25 @@ Every gap identified below, every goal, and every design decision in subsequent 
 
 ### Current state and gaps (analyzed by hierarchy layer)
 
-| Hierarchy Layer   | Area                       | Today                                                                                                                   | Gap (hierarchy violation or missing capability)                                                                                                                                                                              |
-| ----------------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Organization**  | Org governance             | GitHub org name is passed as a string; no governance boundary                                                           | No formalized org-level rulesets, runner groups, or repository defaults. Governance is ad-hoc at the project level.                                                                                                          |
-| **Organization**  | ACA Environment scoping    | ACA Environment created at Platform LZ level                                                                            | ACA Environment should be project-scoped. Each project should create its own ACA Environment in its runner network context. See §5.4.1.                                                                                      |
-| **Organization**  | Identity RG                | Empty RG created at Platform LZ                                                                                         | RG-only deployment is valid — it serves as a shared container for project UAMIs. Verified correct. See Section 5.2.                                                                                                          |
-| **Organization**  | Shared agents resources    | ACR, Log Analytics, container-run UAMI at platform level                                                                | Correctly scoped. These are consumed by all projects.                                                                                                                                                                        |
-| **Organization**  | Dev Center                 | Dev Center + definitions at platform level                                                                              | Correctly scoped. DevBox project pools are created per project referencing org-level Dev Center.                                                                                                                             |
-| **Project**       | Project model              | 1 project = 1 main repo + optional templates repo                                                                       | Real projects often have multiple repos (infra, app, data, ops, shared libs). No multi-repo support.                                                                                                                         |
-| **Project**       | Network / VNet             | Platform always creates a new VNet from address-prefix inputs                                                           | No option to plug into an existing (enterprise-provided) VNet at the project level. Self-hosted runners need to be in the project's VNet.                                                                                    |
-| **Project**       | Layer 2 state storage      | Project creates blob containers in Layer 1 Storage Account                                                              | Per-project Storage Account (LRS by default, selectable replication) in a project-scoped RG inside the platform subscription. Includes a project-owned Key Vault. See §3.2.                                                  |
-| **Project**       | Azure DevOps module        | No `project_azuredevops` root module in the codebase                                                                    | Only `project_github` exists. `project_azuredevops` is referenced in the document and will implement the same interface.                                                                                                     |
-| **Repository**    | Repo → workflow mapping    | Single repo gets a fixed set of workflows                                                                               | No concept of repository profiles. All repos get the same CI/CD shape regardless of purpose (infra vs app vs library).                                                                                                       |
-| **Repository**    | Per-repo identity          | One UAMI set per project (shared across repos)                                                                          | No option for per-repo UAMI for fine-grained RBAC (e.g., infra repo gets Contributor, app repo gets only AcrPush).                                                                                                           |
-| **Environment**   | Env → subscription mapping | Subscriptions variable is flexible (`default = {}`); subscription-level role assignments are conditional via `lookup()` | The target architecture supports subset environments: only create GitHub Actions Environments, UAMIs, branches, and federated credentials for the environments present in the `subscriptions` map.                           |
-| **Environment**   | Identity strategy          | UAMIs created per environment × job type                                                                                | Strategy now documented in §6.5 (UAMIs are project-scoped, created at Tier 2 in the org-level identity RG; no global subscription registry at the LZ). Per-repo UAMI isolation is still a target (see Repository row above). |
-| **Cross-cutting** | Bootstrap state            | Single bootstrap creates Storage Account + Key Vault for tfstate                                                        | Two-layer model: Layer 1 platform storage (bootstrap SA) and Layer 2 per-project storage (project-scoped SA with LRS-by-default, selectable replication).                                                                    |
-| **Cross-cutting** | GitHub vs Azure DevOps     | Separate code paths, no unified abstraction                                                                             | GitHub lacks a "Project" concept that Azure DevOps has; no consistent governance model across both.                                                                                                                          |
-| **Cross-cutting** | Portfolio onboarding       | Each project provisioned via separate `terraform apply`                                                                 | No self-service or GitOps-driven onboarding pattern.                                                                                                                                                                         |
-| **Cross-cutting** | Documentation              | Paths reference `infra/terraform/…` while code lives under `infra/…`                                                    | Confusing for adopters.                                                                                                                                                                                                      |
+| Hierarchy Layer   | Area                       | Today                                                                                                                   | Gap (hierarchy violation or missing capability)                                                                                                                                                                                                                              |
+| ----------------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Organization**  | Org governance             | GitHub org name is passed as a string; no governance boundary                                                           | No formalized org-level rulesets, runner groups, or repository defaults. Governance is ad-hoc at the project level.                                                                                                                                                          |
+| **Organization**  | ACA Environment scoping    | ACA Environment created at Platform LZ level                                                                            | ACA Environment should be project-scoped. Each project should create its own ACA Environment in its runner network context. See [ADR-001](./adr/ADR-001-platform-lz-resource-scoping.md).                                                                                    |
+| **Organization**  | Identity RG                | Empty RG created at Platform LZ                                                                                         | RG-only deployment is valid — it serves as a shared container for project UAMIs. Verified correct. See [ADR-001](./adr/ADR-001-platform-lz-resource-scoping.md).                                                                                                             |
+| **Organization**  | Shared agents resources    | ACR, Log Analytics, container-run UAMI at platform level                                                                | Correctly scoped. These are consumed by all projects.                                                                                                                                                                                                                        |
+| **Organization**  | Dev Center                 | Dev Center + definitions at platform level                                                                              | Correctly scoped. DevBox project pools are created per project referencing org-level Dev Center.                                                                                                                                                                             |
+| **Project**       | Project model              | 1 project = 1 main repo + optional templates repo                                                                       | Real projects often have multiple repos (infra, app, data, ops, shared libs). No multi-repo support.                                                                                                                                                                         |
+| **Project**       | Network / VNet             | Platform always creates a new VNet from address-prefix inputs                                                           | No option to plug into an existing (enterprise-provided) VNet at the project level. Self-hosted runners need to be in the project's VNet.                                                                                                                                    |
+| **Project**       | Layer 2 state storage      | Project creates blob containers in Layer 1 Storage Account                                                              | Per-project Storage Account (LRS by default, selectable replication) in a project-scoped RG inside the platform subscription. Includes a project-owned Key Vault. See §3.2.                                                                                                  |
+| **Project**       | Azure DevOps module        | No `project_azuredevops` root module in the codebase                                                                    | Only `project_github` exists. `project_azuredevops` is referenced in the document and will implement the same interface.                                                                                                                                                     |
+| **Repository**    | Repo → workflow mapping    | Single repo gets a fixed set of workflows                                                                               | No concept of repository profiles. All repos get the same CI/CD shape regardless of purpose (infra vs app vs library).                                                                                                                                                       |
+| **Repository**    | Per-repo identity          | One UAMI set per project (shared across repos)                                                                          | No option for per-repo UAMI for fine-grained RBAC (e.g., infra repo gets Contributor, app repo gets only AcrPush).                                                                                                                                                           |
+| **Environment**   | Env → subscription mapping | Subscriptions variable is flexible (`default = {}`); subscription-level role assignments are conditional via `lookup()` | The target architecture supports subset environments: only create GitHub Actions Environments, UAMIs, branches, and federated credentials for the environments present in the `subscriptions` map.                                                                           |
+| **Environment**   | Identity strategy          | UAMIs created per environment × job type                                                                                | Strategy now documented in [ADR-003](./adr/ADR-003-project-multi-repo-model.md) (UAMIs are project-scoped, created at Tier 2 in the org-level identity RG; no global subscription registry at the LZ). Per-repo UAMI isolation is still a target (see Repository row above). |
+| **Cross-cutting** | Bootstrap state            | Single bootstrap creates Storage Account + Key Vault for tfstate                                                        | Two-layer model: Layer 1 platform storage (bootstrap SA) and Layer 2 per-project storage (project-scoped SA with LRS-by-default, selectable replication).                                                                                                                    |
+| **Cross-cutting** | GitHub vs Azure DevOps     | Separate code paths, no unified abstraction                                                                             | GitHub lacks a "Project" concept that Azure DevOps has; no consistent governance model across both.                                                                                                                                                                          |
+| **Cross-cutting** | Portfolio onboarding       | Each project provisioned via separate `terraform apply`                                                                 | No self-service or GitOps-driven onboarding pattern.                                                                                                                                                                                                                         |
+| **Cross-cutting** | Documentation              | Paths reference `infra/terraform/…` while code lives under `infra/…`                                                    | Confusing for adopters.                                                                                                                                                                                                                                                      |
 
 ### Goals (to achieve correct Org-Project-Repo-Env hierarchy)
 
@@ -95,50 +91,50 @@ Every gap identified below, every goal, and every design decision in subsequent 
 - **Layer 1 — Platform state** (single Storage Account, created by `_bootstrap`): stores tfstate for bootstrap, Platform LZ, and project provisioning (`project_github` / `project_azuredevops`).
 - **Layer 2 — Per-project application state** (one Storage Account per project, created during project provisioning): stores tfstate for the project team's own application IaC (e.g., workload VNets, AKS, app resources). Layer 2 is fully owned by the project and is reached over private endpoint from the project DevOps VNet.
 
-**3. Three-tier VNet model** (§8.0)
+**3. Three-tier VNet model** ([ADR-005](./adr/ADR-005-vnet-architecture.md))
 
 - **Platform LZ VNet** (org-scoped, `devops/lz`) — private endpoints for bootstrap SA/KV, NAT egress, shared DNS zones.
 - **Project DevOps network context** (project-scoped: a project-dedicated subnet slice within the shared Platform LZ VNet in `platform` mode, or a BYO VNet in `byo` mode) — hosts the runner ACA Environment, Layer 2 tfstate private endpoint, and DevBox pool.
 - **Application / Workload VNet** (per-environment, owned by the project team's own IaC) — where actual app workloads deploy. Peering between the project's DevOps network context and the Application VNet is an enterprise hub-and-spoke concern and is **not** created by the LZ.
 
-**4. Project-scoped ACA Environment for self-hosted runners** (§5.4.1)
+**4. Project-scoped ACA Environment for self-hosted runners** ([ADR-001](./adr/ADR-001-platform-lz-resource-scoping.md))
 
 - ACA Environment is created by the **project module** and bound to a subnet of the project's DevOps network context, because an ACA Environment is bound to exactly one VNet and therefore cannot serve BYO-VNet projects from a shared platform location.
 - Platform LZ continues to provide the shared prerequisites: ACR, Log Analytics, container-run UAMI, container image build tasks, and private DNS zones.
 
-**5. Identity and subscription mapping** (§6.5, §5.2)
+**5. Identity and subscription mapping** ([ADR-003](./adr/ADR-003-project-multi-repo-model.md), [ADR-001](./adr/ADR-001-platform-lz-resource-scoping.md))
 
 - Each project gets **7 UAMIs** created at project time: `feat-plan`, `dev-plan`, `stg-plan`, `prod-plan`, `dev-apply`, `stg-apply`, `prod-apply`. All UAMIs live in the org-level Identity RG (centralized RBAC and discoverability) but are project-scoped in naming and lifecycle.
 - Subscriptions are declared per project; role assignments on subscriptions are conditional on the subscription being present, so a project can opt into a subset of environments.
 - OIDC federated credentials bind each UAMI to the matching GitHub environment / ADO service connection.
 
-**6. Unified GitHub / Azure DevOps abstraction** (§7)
+**6. Unified GitHub / Azure DevOps abstraction** ([ADR-004](./adr/ADR-004-github-ado-abstraction.md))
 
 - A DevOps LZ "Project" is a platform-agnostic concept. For GitHub, a Project is a naming prefix + a repository set + 7 UAMIs. For Azure DevOps, a Project maps 1:1 to an `azuredevops_project`. Governance variables (rulesets, runner groups, repository defaults) are defined once and applied to the correct primitive on each platform.
 
-**7. Organization-level governance** (§9)
+**7. Organization-level governance** ([ADR-006](./adr/ADR-006-organization-governance.md))
 
 - Platform-agnostic governance inputs drive GitHub rulesets + runner groups + repository defaults, and Azure DevOps branch policies + agent pools + project settings, so both platforms reach governance parity from the same declarative source.
 
-**8. GitOps-driven project / repository onboarding** (§10)
+**8. GitOps-driven project / repository onboarding** ([ADR-007](./adr/ADR-007-gitops-onboarding.md))
 
 - New projects and new repositories are requested via a governance repository (issue → YAML PR → automated `project_*` apply), so Platform LZ and project team interactions are auditable and reviewable.
 
-**9. Two intentional network modes — `platform` and `byo` — with consistency rules** (§8.0.1, §8.0.3)
+**9. Two intentional network modes — `platform` and `byo` — with consistency rules** ([ADR-005](./adr/ADR-005-vnet-architecture.md))
 
 - `network_mode = "platform"` is the **low-friction default** for projects that do not (yet) own an enterprise spoke VNet: the Platform LZ pre-provisions the VNet, NAT egress, private DNS zones, and bootstrap private endpoints once at the org level, and the project consumes a project-dedicated subnet slice via LZ outputs. All seven BYO consistency rules are satisfied automatically with no peering or DNS-link work for the project team.
 - `network_mode = "byo"` is the **enterprise integration mode** for projects that must land in a pre-provisioned hub-and-spoke spoke (corporate firewall, DNS forwarding, address-plan governance). The project supplies an existing VNet/subnet IDs and must satisfy the seven consistency rules vs. the Platform LZ VNet (private DNS zone linkage, bootstrap SA/KV reachability via peering, ACR pull path, ACA subnet delegation, address-space non-overlap, split-horizon DNS isolation, cross-environment VNet consistency).
-- Both modes are first-class and complementary — `platform` mode is **not** retained for backward compatibility (see §8.0.3 for the rationale). A project may also start in `platform` mode and migrate to `byo` later without changing the project module contract.
+- Both modes are first-class and complementary — `platform` mode is **not** retained for backward compatibility (see [ADR-005](./adr/ADR-005-vnet-architecture.md) for the rationale). A project may also start in `platform` mode and migrate to `byo` later without changing the project module contract.
 
-**10. `project_azuredevops` at parity with `project_github`** (§6, §7)
+**10. `project_azuredevops` at parity with `project_github`** ([ADR-003](./adr/ADR-003-project-multi-repo-model.md), [ADR-004](./adr/ADR-004-github-ado-abstraction.md))
 
 - The Azure DevOps root module implements the same Project → Repo → Environment contract, the same 7-UAMI identity model, the same Layer 2 state storage, and the same ACA Environment binding as `project_github`.
 
-> **Reading the rest of the document.** With these ten goals in mind: Sections 2–3 define hierarchy and state layering; Section 4 gives the target module layout; Section 5 reviews Platform LZ resource scoping (including §5.4.1's project-scoped ACA Environment); Sections 6–7 define the Project and the GitHub/ADO abstraction; Section 8 defines VNet architecture and BYO VNet; Section 9 defines governance; Section 10 defines GitOps onboarding; Sections 11–14 cover naming, migration, decisions, and remaining follow-ups.
+> **Reading the rest of the document.** Sections 2–3 define hierarchy and state layering; Section 4 gives the target module layout. Detailed design decisions are documented in separate ADR documents (see the [ADR index](#architecture-decision-records-adrs) below). Section 5 covers migration and Section 6 the decision log.
 
 ### Architecture diagrams (target at a glance)
 
-> **Purpose of this subsection.** The following three diagrams visualize the architecture goals above so readers can see the destination at a glance before reading the as-is / gaps / to-be discussion. They depict the **target** state, not the current code — current-vs-target deltas are tracked in §5 and §8.
+> **Purpose of this subsection.** The following three diagrams visualize the architecture goals above so readers can see the destination at a glance before reading the as-is / gaps / to-be discussion. They depict the **target** state, not the current code — detailed design per topic is in the ADR documents.
 
 #### Diagram 1 — Org-Project-Repo-Env hierarchy + two-layer state ownership (Goals 1, 2, 5, 6, 7)
 
@@ -193,7 +189,7 @@ Shows the three VNet tiers, who owns each, and the consistency contract a BYO pr
 │  • NAT egress                                                              │
 └──────────────────────────────────┬──────────────────────────────────────────┘
                                    │ peering + DNS-zone link
-                                   │ (7 consistency rules — §8.0.1)
+                                   │ (7 consistency rules — [ADR-005](./adr/ADR-005-vnet-architecture.md))
         ┌──────────────────────────┴───────────────────────────┐
         ▼                                                      ▼
 ┌─ TIER 2 — Project DevOps network context ┐   ┌─ TIER 2 — Project DevOps network ┐
@@ -204,7 +200,7 @@ Shows the three VNet tiers, who owns each, and the consistency contract a BYO pr
 │  • Layer 2 SA private endpoint subnet   │   │  • Layer 2 SA private endpoint│
 │  • DevBox network connection            │   │  • DevBox network connection  │
 └────────────────────┬────────────────────┘   └─────────────┬─────────────────┘
-                     │ hub-and-spoke peering (NOT created by LZ — §8.0.2)
+                     │ hub-and-spoke peering (NOT created by LZ — [ADR-005](./adr/ADR-005-vnet-architecture.md))
                      ▼                                      ▼
 ┌─ TIER 3 — Application / Workload VNet (per-environment, project team's IaC)─┐
 │  • Owned and deployed by the project's own Layer 2 Terraform                │
@@ -214,11 +210,11 @@ Shows the three VNet tiers, who owns each, and the consistency contract a BYO pr
 
 #### Diagram 3 — Project module composition (Goals 4, 5, 8, 10)
 
-Shows what a single project module deploys at apply time, how it consumes Platform LZ outputs, and how the GitOps onboarding repository drives provisioning. This is the project-scoped view of the project-scoped ACA Environment goal (§5.4.1).
+Shows what a single project module deploys at apply time, how it consumes Platform LZ outputs, and how the GitOps onboarding repository drives provisioning. This is the project-scoped view of the project-scoped ACA Environment goal ([ADR-001](./adr/ADR-001-platform-lz-resource-scoping.md)).
 
 ```text
                 ┌──────────────────────────────────┐
-                │ GitOps onboarding repo (§10)     │
+                │ GitOps onboarding repo ([ADR-007](./adr/ADR-007-gitops-onboarding.md))     │
                 │  issue → YAML PR → CI apply      │
                 └───────────────┬──────────────────┘
                                 │ project YAML
@@ -278,51 +274,51 @@ Provisions only the resources required to manage the DevOps platform itself (Lay
 
 Provisions shared infrastructure consumed by **all** projects in the organization. One deployment per organization. Outputs are read by every project module via `terraform_remote_state`.
 
-| Category   | Resource                                                       | What is it                                                                       | What is it for                                                                                                                                                                                                                                                  |
-| ---------- | -------------------------------------------------------------- | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| RGs        | Agents RG                                                      | Resource Group                                                                   | Hosts shared agents/runner infrastructure (ACR, Log Analytics, container-run UAMI; ACA Environment in current code, see §5.4.1)                                                                                                                                 |
-| RGs        | Identity RG                                                    | Resource Group (empty at LZ time)                                                | Org-level container that **project modules** populate with the 7 per-project UAMIs at Tier 2 (centralized RBAC and discoverability — see §5.2 Identity RG rationale)                                                                                            |
-| RGs        | Network RG                                                     | Resource Group                                                                   | Hosts the Platform LZ VNet, subnets, NAT, Private DNS Zones, and Private Endpoints                                                                                                                                                                              |
-| RGs        | DevBox RG                                                      | Resource Group                                                                   | Hosts the org-level Dev Center and Dev Box definitions                                                                                                                                                                                                          |
-| Agents     | Azure Container Registry (ACR)                                 | Premium ACR with private endpoint                                                | Stores the self-hosted runner container image used by every project's ACA Jobs (one shared image, many project-scoped runners)                                                                                                                                  |
-| Agents     | ACR Build Task                                                 | `azurerm_container_registry_task`                                                | Builds and refreshes the runner container image inside the platform (no external CI required)                                                                                                                                                                   |
-| Agents     | Log Analytics Workspace                                        | Shared LA workspace                                                              | Centralized logs/metrics for runner ACA Environments and Jobs across all projects                                                                                                                                                                               |
-| Agents     | Container-Run UAMI                                             | UAMI assigned to ACA Jobs                                                        | Identity used by runner containers to pull from ACR and write logs to Log Analytics (shared across projects)                                                                                                                                                    |
-| Agents     | ~~ACA Environment~~ _(target: move to project level — §5.4.1)_ | _(target: no longer created at LZ level)_                                        | The ACA Environment is a project-scoped resource in the target architecture. The LZ continues to host shared infra (ACR, Log Analytics, container-run UAMI) consumed by project-level ACA Environments. See Table C for the project-scoped ACA Environment row. |
-| Network    | Platform LZ VNet                                               | Azure Virtual Network                                                            | Hub VNet for the platform: hosts bootstrap SA / KV Private Endpoints, runner subnet (used by project-scoped ACA in `platform` mode), DevBox subnet, and Private DNS Zone links                                                                                  |
-| Network    | Subnets (runner, devbox, private-endpoint, etc.)               | VNet subnets with delegations as needed                                          | Provide the project-dedicated address slices (in `platform` mode) and platform-shared service slices                                                                                                                                                            |
-| Network    | NAT Gateway _(if configured)_                                  | Azure NAT Gateway                                                                | Deterministic egress for runner Jobs (so customers can allow-list the egress IPs in private endpoints / firewalls)                                                                                                                                              |
-| Network    | Private DNS Zones                                              | Azure Private DNS Zones for `blob`, `vault`, `azurecr.io`, `containerapps`, etc. | Resolve the platform's Private Endpoints from the platform VNet and from BYO project VNets that link to these zones (see §8.0.1)                                                                                                                                |
-| Network    | Private Endpoints (Layer 1 SA, KV)                             | Private Endpoints into the platform VNet                                         | Make the bootstrap Storage Account and Key Vault reachable only over private connectivity                                                                                                                                                                       |
-| KV secrets | VCS PAT secrets (GitHub / Azure DevOps)                        | Secrets stored in the bootstrap Key Vault                                        | Securely surface VCS Personal Access Tokens to project modules (`project_github` / `project_azuredevops`) via Key Vault data source — never persisted in tfvars                                                                                                 |
-| Dev Center | Azure Dev Center                                               | Microsoft Dev Box service root                                                   | Org-wide control plane for developer Dev Boxes used across projects                                                                                                                                                                                             |
-| Dev Center | Dev Box Definitions                                            | Per-image / per-SKU Dev Box definitions                                          | Catalog of Dev Box images that project teams can attach to their projects                                                                                                                                                                                       |
-| Dev Center | Dev Center Network Connection                                  | Network connection bound to the Platform LZ VNet                                 | Anchors Dev Box pools to platform networking so Dev Boxes share the same private DNS / egress posture as runners                                                                                                                                                |
-| Governance | Org-level rulesets / runner groups _(target — §5.4.2)_         | GitHub org rulesets, Azure DevOps agent pools / groups (planned)                 | Enforce branch protection, required workflows, and per-project runner isolation at the organization level (parity for both VCS platforms)                                                                                                                       |
+| Category   | Resource                                                                                                         | What is it                                                                       | What is it for                                                                                                                                                                                                                                                  |
+| ---------- | ---------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| RGs        | Agents RG                                                                                                        | Resource Group                                                                   | Hosts shared agents/runner infrastructure (ACR, Log Analytics, container-run UAMI; ACA Environment in current code, see [ADR-001](./adr/ADR-001-platform-lz-resource-scoping.md))                                                                               |
+| RGs        | Identity RG                                                                                                      | Resource Group (empty at LZ time)                                                | Org-level container that **project modules** populate with the 7 per-project UAMIs at Tier 2 (centralized RBAC and discoverability — see [ADR-001](./adr/ADR-001-platform-lz-resource-scoping.md) Identity RG rationale)                                        |
+| RGs        | Network RG                                                                                                       | Resource Group                                                                   | Hosts the Platform LZ VNet, subnets, NAT, Private DNS Zones, and Private Endpoints                                                                                                                                                                              |
+| RGs        | DevBox RG                                                                                                        | Resource Group                                                                   | Hosts the org-level Dev Center and Dev Box definitions                                                                                                                                                                                                          |
+| Agents     | Azure Container Registry (ACR)                                                                                   | Premium ACR with private endpoint                                                | Stores the self-hosted runner container image used by every project's ACA Jobs (one shared image, many project-scoped runners)                                                                                                                                  |
+| Agents     | ACR Build Task                                                                                                   | `azurerm_container_registry_task`                                                | Builds and refreshes the runner container image inside the platform (no external CI required)                                                                                                                                                                   |
+| Agents     | Log Analytics Workspace                                                                                          | Shared LA workspace                                                              | Centralized logs/metrics for runner ACA Environments and Jobs across all projects                                                                                                                                                                               |
+| Agents     | Container-Run UAMI                                                                                               | UAMI assigned to ACA Jobs                                                        | Identity used by runner containers to pull from ACR and write logs to Log Analytics (shared across projects)                                                                                                                                                    |
+| Agents     | ~~ACA Environment~~ _(target: move to project level — [ADR-001](./adr/ADR-001-platform-lz-resource-scoping.md))_ | _(target: no longer created at LZ level)_                                        | The ACA Environment is a project-scoped resource in the target architecture. The LZ continues to host shared infra (ACR, Log Analytics, container-run UAMI) consumed by project-level ACA Environments. See Table C for the project-scoped ACA Environment row. |
+| Network    | Platform LZ VNet                                                                                                 | Azure Virtual Network                                                            | Hub VNet for the platform: hosts bootstrap SA / KV Private Endpoints, runner subnet (used by project-scoped ACA in `platform` mode), DevBox subnet, and Private DNS Zone links                                                                                  |
+| Network    | Subnets (runner, devbox, private-endpoint, etc.)                                                                 | VNet subnets with delegations as needed                                          | Provide the project-dedicated address slices (in `platform` mode) and platform-shared service slices                                                                                                                                                            |
+| Network    | NAT Gateway _(if configured)_                                                                                    | Azure NAT Gateway                                                                | Deterministic egress for runner Jobs (so customers can allow-list the egress IPs in private endpoints / firewalls)                                                                                                                                              |
+| Network    | Private DNS Zones                                                                                                | Azure Private DNS Zones for `blob`, `vault`, `azurecr.io`, `containerapps`, etc. | Resolve the platform's Private Endpoints from the platform VNet and from BYO project VNets that link to these zones (see [ADR-005](./adr/ADR-005-vnet-architecture.md))                                                                                         |
+| Network    | Private Endpoints (Layer 1 SA, KV)                                                                               | Private Endpoints into the platform VNet                                         | Make the bootstrap Storage Account and Key Vault reachable only over private connectivity                                                                                                                                                                       |
+| KV secrets | VCS PAT secrets (GitHub / Azure DevOps)                                                                          | Secrets stored in the bootstrap Key Vault                                        | Securely surface VCS Personal Access Tokens to project modules (`project_github` / `project_azuredevops`) via Key Vault data source — never persisted in tfvars                                                                                                 |
+| Dev Center | Azure Dev Center                                                                                                 | Microsoft Dev Box service root                                                   | Org-wide control plane for developer Dev Boxes used across projects                                                                                                                                                                                             |
+| Dev Center | Dev Box Definitions                                                                                              | Per-image / per-SKU Dev Box definitions                                          | Catalog of Dev Box images that project teams can attach to their projects                                                                                                                                                                                       |
+| Dev Center | Dev Center Network Connection                                                                                    | Network connection bound to the Platform LZ VNet                                 | Anchors Dev Box pools to platform networking so Dev Boxes share the same private DNS / egress posture as runners                                                                                                                                                |
+| Governance | Org-level rulesets / runner groups _(target — [ADR-001](./adr/ADR-001-platform-lz-resource-scoping.md))_         | GitHub org rulesets, Azure DevOps agent pools / groups (planned)                 | Enforce branch protection, required workflows, and per-project runner isolation at the organization level (parity for both VCS platforms)                                                                                                                       |
 
 #### Table C — Per-project (`infra/devops/project_github`, future `infra/devops/project_azuredevops`)
 
 Provisions one project's Azure resources, identities, and VCS-side configuration. Run once per project. Consumes Platform LZ outputs (Table B) via `terraform_remote_state`. The same resource set will be created by `project_azuredevops` so GitHub and Azure DevOps projects are functionally equivalent.
 
-| Category     | Resource                                               | What is it                                                                                                                   | What is it for                                                                                                                                                                                         |
-| ------------ | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Identity     | 7 Project UAMIs                                        | UAMIs created in the org-level Identity RG (Table B)                                                                         | Per-environment, per-job-type identities: `feat-plan`, `dev-plan`, `stg-plan`, `prod-plan`, `dev-apply`, `stg-apply`, `prod-apply` — one identity per (env × job) for least-privilege workflows (§6.5) |
-| Identity     | OIDC Federated Credentials                             | `azurerm_federated_identity_credential` per UAMI                                                                             | Trust the project's GitHub repo / Azure DevOps service connection to mint Azure tokens for each (env × job) without storing client secrets                                                             |
-| Identity     | Subscription role assignments _(conditional, per env)_ | Built-in / custom RBAC role assignments on the env subscription                                                              | Grant `*-plan` UAMIs read-only and `*-apply` UAMIs deploy-time scopes against the subscription mapped to that environment (only when a subscription is provided for the env)                           |
-| State        | Layer 2 Storage Account                                | Per-project Storage Account (LRS by default, selectable replication) in a project-scoped RG inside the platform subscription | Stores **Layer 2** tfstate for the project team's own application IaC, isolated from the Layer 1 platform SA                                                                                           |
-| State        | Layer 2 Project Resource Group                         | New project-scoped Resource Group inside the platform subscription                                                           | Houses the Layer 2 Storage Account, Project Key Vault, and Layer 2 Private Endpoint — all project-owned resources in a single RG                                                                       |
-| Secrets      | Project Key Vault (§8.0.1 rule #3)                     | Per-project Key Vault (deployed in the project's runner VNet)                                                                | Stores the project team's own secrets and keys (e.g., app config, DB passwords, signing keys). Distinct from the org-level bootstrap Key Vault (which only holds VCS PATs used at provisioning time).  |
-| State        | Layer 2 Private Endpoint + DNS link                    | Private Endpoint for the Layer 2 SA in the project's runner network context                                                  | Keep app-tfstate access on the private network used by the project's runners                                                                                                                           |
-| Compute      | ACA Environment (§5.4.1)                               | Project-scoped Azure Container Apps Environment                                                                              | Runs the project's self-hosted runner Jobs. Bound to the project's runner network context (project-dedicated subnet in the Platform LZ VNet for `platform` mode, BYO VNet for `byo` mode)              |
-| Compute      | ACA Jobs / ACI Jobs                                    | Self-hosted runner job definitions                                                                                           | Pull the runner image from the shared ACR and execute CI workflows for the project's repositories                                                                                                      |
-| Dev Box      | Dev Center Project + Pool                              | Dev Center Project bound to the org Dev Center, plus a Pool                                                                  | Lets the project's developers provision Dev Boxes from the org-wide catalog (Table B), scoped to this project                                                                                          |
-| Dev Box      | Dev Box role assignments                               | RBAC for Dev Box admin / user on the Dev Center Project                                                                      | Grants the project's team appropriate access to provision and manage their Dev Boxes                                                                                                                   |
-| Custom RBAC  | Custom roles (e.g., blob container reader)             | Project-scoped custom RBAC role definitions / assignments                                                                    | Fine-grained access from runner UAMIs to the project's tfstate container(s) and to other project resources                                                                                             |
-| VCS — GitHub | Repositories (one per profile)                         | GitHub repositories provisioned by the module                                                                                | Project's source repositories with the standard branch / file layout the workflow templates expect                                                                                                     |
-| VCS — GitHub | GitHub Environments × {features, dev, staging, prod}   | GitHub deployment environments per repo                                                                                      | Bind each (env × job) to the corresponding UAMI via OIDC + protection rules (reviewers, branch policies)                                                                                               |
-| VCS — GitHub | Workflow files (profile-driven)                        | YAML workflows materialized from the `github_workflows` module                                                               | Standardized plan/apply pipelines targeting the 7 (env × job) combinations and the project's runner ACA Environment                                                                                    |
-| VCS — GitHub | Per-project runner reference                           | GitHub runner group / labels referencing the project ACA runner                                                              | Routes the project's CI jobs to its own runners (no cross-project runner sharing)                                                                                                                      |
-| VCS — ADO    | Azure DevOps Project + repos + pipelines               | Azure DevOps Project + Git repos + YAML pipelines                                                                            | Functional equivalent of the GitHub stack above, so the abstraction in §7 holds end-to-end                                                                                                             |
+| Category     | Resource                                                                   | What is it                                                                                                                   | What is it for                                                                                                                                                                                                                                         |
+| ------------ | -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Identity     | 7 Project UAMIs                                                            | UAMIs created in the org-level Identity RG (Table B)                                                                         | Per-environment, per-job-type identities: `feat-plan`, `dev-plan`, `stg-plan`, `prod-plan`, `dev-apply`, `stg-apply`, `prod-apply` — one identity per (env × job) for least-privilege workflows ([ADR-003](./adr/ADR-003-project-multi-repo-model.md)) |
+| Identity     | OIDC Federated Credentials                                                 | `azurerm_federated_identity_credential` per UAMI                                                                             | Trust the project's GitHub repo / Azure DevOps service connection to mint Azure tokens for each (env × job) without storing client secrets                                                                                                             |
+| Identity     | Subscription role assignments _(conditional, per env)_                     | Built-in / custom RBAC role assignments on the env subscription                                                              | Grant `*-plan` UAMIs read-only and `*-apply` UAMIs deploy-time scopes against the subscription mapped to that environment (only when a subscription is provided for the env)                                                                           |
+| State        | Layer 2 Storage Account                                                    | Per-project Storage Account (LRS by default, selectable replication) in a project-scoped RG inside the platform subscription | Stores **Layer 2** tfstate for the project team's own application IaC, isolated from the Layer 1 platform SA                                                                                                                                           |
+| State        | Layer 2 Project Resource Group                                             | New project-scoped Resource Group inside the platform subscription                                                           | Houses the Layer 2 Storage Account, Project Key Vault, and Layer 2 Private Endpoint — all project-owned resources in a single RG                                                                                                                       |
+| Secrets      | Project Key Vault ([ADR-005](./adr/ADR-005-vnet-architecture.md) rule #3)  | Per-project Key Vault (deployed in the project's runner VNet)                                                                | Stores the project team's own secrets and keys (e.g., app config, DB passwords, signing keys). Distinct from the org-level bootstrap Key Vault (which only holds VCS PATs used at provisioning time).                                                  |
+| State        | Layer 2 Private Endpoint + DNS link                                        | Private Endpoint for the Layer 2 SA in the project's runner network context                                                  | Keep app-tfstate access on the private network used by the project's runners                                                                                                                                                                           |
+| Compute      | ACA Environment ([ADR-001](./adr/ADR-001-platform-lz-resource-scoping.md)) | Project-scoped Azure Container Apps Environment                                                                              | Runs the project's self-hosted runner Jobs. Bound to the project's runner network context (project-dedicated subnet in the Platform LZ VNet for `platform` mode, BYO VNet for `byo` mode)                                                              |
+| Compute      | ACA Jobs / ACI Jobs                                                        | Self-hosted runner job definitions                                                                                           | Pull the runner image from the shared ACR and execute CI workflows for the project's repositories                                                                                                                                                      |
+| Dev Box      | Dev Center Project + Pool                                                  | Dev Center Project bound to the org Dev Center, plus a Pool                                                                  | Lets the project's developers provision Dev Boxes from the org-wide catalog (Table B), scoped to this project                                                                                                                                          |
+| Dev Box      | Dev Box role assignments                                                   | RBAC for Dev Box admin / user on the Dev Center Project                                                                      | Grants the project's team appropriate access to provision and manage their Dev Boxes                                                                                                                                                                   |
+| Custom RBAC  | Custom roles (e.g., blob container reader)                                 | Project-scoped custom RBAC role definitions / assignments                                                                    | Fine-grained access from runner UAMIs to the project's tfstate container(s) and to other project resources                                                                                                                                             |
+| VCS — GitHub | Repositories (one per profile)                                             | GitHub repositories provisioned by the module                                                                                | Project's source repositories with the standard branch / file layout the workflow templates expect                                                                                                                                                     |
+| VCS — GitHub | GitHub Environments × {features, dev, staging, prod}                       | GitHub deployment environments per repo                                                                                      | Bind each (env × job) to the corresponding UAMI via OIDC + protection rules (reviewers, branch policies)                                                                                                                                               |
+| VCS — GitHub | Workflow files (profile-driven)                                            | YAML workflows materialized from the `github_workflows` module                                                               | Standardized plan/apply pipelines targeting the 7 (env × job) combinations and the project's runner ACA Environment                                                                                                                                    |
+| VCS — GitHub | Per-project runner reference                                               | GitHub runner group / labels referencing the project ACA runner                                                              | Routes the project's CI jobs to its own runners (no cross-project runner sharing)                                                                                                                                                                      |
+| VCS — ADO    | Azure DevOps Project + repos + pipelines                                   | Azure DevOps Project + Git repos + YAML pipelines                                                                            | Functional equivalent of the GitHub stack above, so the abstraction in [ADR-004](./adr/ADR-004-github-ado-abstraction.md) holds end-to-end                                                                                                             |
 
 ---
 
@@ -350,7 +346,7 @@ Provisions one project's Azure resources, identities, and VCS-side configuration
 │  │  • VCS governance:                                            │  │
 │  │    – GitHub: Org-level rulesets, runner groups               │  │
 │  │    – Azure DevOps: Org-level agent pools                    │  │
-│  │  * ACA Environment is a project-level resource — §5.4.1     │  │
+│  │  * ACA Environment is a project-level resource — [ADR-001](./adr/ADR-001-platform-lz-resource-scoping.md)     │  │
 │  │  • Tfstate key: "devops-lz.terraform.tfstate"               │  │
 │  └──────────────────────────────────────────────────────────────┘  │
 │                                        ▼ (remote_state)            │
@@ -384,16 +380,16 @@ Provisions one project's Azure resources, identities, and VCS-side configuration
 
 ### Key terms
 
-| Term                      | Definition                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Organization**          | The top-level governance boundary — maps to a GitHub Organization or Azure DevOps Organization. Owns shared infrastructure and policies.                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| **Bootstrap**             | The foundational `_bootstrap` layer that creates the Storage Account (for tfstate) and Key Vault (for secrets). Runs once, produces a `bootstrap.config.json` consumed by all subsequent layers.                                                                                                                                                                                                                                                                                                                                                                                         |
-| **Platform Landing Zone** | The shared infrastructure layer (`devops/lz`) provisioned once per organization. Creates Azure resource groups (identity, agents, network, DevBox) and shared compute/registry resources. Org-scoped resources include: ACR, Log Analytics, container-run UAMI, Dev Center, platform VNet, and private DNS zones. VCS governance resources (org-level rulesets, runner groups) are part of the target architecture (see Section 9). The ACA Environment is a **project-level** resource in the target architecture (§5.4.1). Its own tfstate is stored in the bootstrap Storage Account. |
-| **Project**               | A logical grouping of repositories, environments, identities, and runner jobs that together deliver one product or workload. In GitHub, a project is a naming-convention-based grouping of repos within the flat org. In Azure DevOps, a project maps to an actual Azure DevOps Project container.                                                                                                                                                                                                                                                                                       |
-| **Repository Set**        | The ordered list of Git repositories that belong to a project. Each repo has a **profile** that determines its CI/CD workflow shape.                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| **Repository Profile**    | A template that defines the branch strategy, workflow files, environments, and identity needs for a class of repository (e.g., `infra`, `app`, `library`). Profiles are a **recommendation** — users can place infra and app code in a single repo if they prefer.                                                                                                                                                                                                                                                                                                                       |
-| **Environment**           | A deployment target — maps 1:1 to an Azure subscription and a GitHub Actions Environment (or Azure DevOps Environment) with OIDC-federated UAMI.                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| **Network Mode**          | How the project connects to Azure networking: `platform` (use the LZ-managed VNet) or `byo` (Bring Your Own VNet).                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Term                      | Definition                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Organization**          | The top-level governance boundary — maps to a GitHub Organization or Azure DevOps Organization. Owns shared infrastructure and policies.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| **Bootstrap**             | The foundational `_bootstrap` layer that creates the Storage Account (for tfstate) and Key Vault (for secrets). Runs once, produces a `bootstrap.config.json` consumed by all subsequent layers.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **Platform Landing Zone** | The shared infrastructure layer (`devops/lz`) provisioned once per organization. Creates Azure resource groups (identity, agents, network, DevBox) and shared compute/registry resources. Org-scoped resources include: ACR, Log Analytics, container-run UAMI, Dev Center, platform VNet, and private DNS zones. VCS governance resources (org-level rulesets, runner groups) are part of the target architecture (see [ADR-006](./adr/ADR-006-organization-governance.md)). The ACA Environment is a **project-level** resource in the target architecture ([ADR-001](./adr/ADR-001-platform-lz-resource-scoping.md)). Its own tfstate is stored in the bootstrap Storage Account. |
+| **Project**               | A logical grouping of repositories, environments, identities, and runner jobs that together deliver one product or workload. In GitHub, a project is a naming-convention-based grouping of repos within the flat org. In Azure DevOps, a project maps to an actual Azure DevOps Project container.                                                                                                                                                                                                                                                                                                                                                                                   |
+| **Repository Set**        | The ordered list of Git repositories that belong to a project. Each repo has a **profile** that determines its CI/CD workflow shape.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| **Repository Profile**    | A template that defines the branch strategy, workflow files, environments, and identity needs for a class of repository (e.g., `infra`, `app`, `library`). Profiles are a **recommendation** — users can place infra and app code in a single repo if they prefer.                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| **Environment**           | A deployment target — maps 1:1 to an Azure subscription and a GitHub Actions Environment (or Azure DevOps Environment) with OIDC-federated UAMI.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **Network Mode**          | How the project connects to Azure networking: `platform` (use the LZ-managed VNet) or `byo` (Bring Your Own VNet).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 
 ---
 
@@ -482,7 +478,7 @@ Within Layer 1, there are three operational tiers that determine the order of Te
 │  Creates:                                                        │
 │    • VCS resources (repos, workflows, environments, etc.)       │
 │    • UAMIs + federated identity credentials                     │
-│    • ACA Environment per project (§5.4.1)                       │
+│    • ACA Environment per project ([ADR-001](./adr/ADR-001-platform-lz-resource-scoping.md))                       │
 │    • Runners (ACA jobs using project ACA Env, or ACI)            │
 │    • Layer 2 Storage Account (separate per-project SA)          │
 │    • Project Key Vault                                          │
@@ -615,1724 +611,24 @@ Additionally, the **GitOps governance repository** (for issue-driven project/rep
 
 ---
 
-## 5. Organization-Level Landing Zone (`devops/lz`)
-
-### 5.1 Role: Platform Bootstrap (Tier 1 within Layer 1)
-
-The Landing Zone serves as the **organizational platform bootstrap**. It is the first Terraform layer applied after Tier 0 (`_bootstrap`), and it creates all shared Azure and VCS resources that projects depend on.
-
-Operationally:
-
-- **Tier 0** (`_bootstrap`) is applied once and very rarely updated. Creates the Layer 1 Storage Account.
-- **Tier 1** (`devops/lz`) is applied whenever the organization's platform configuration changes (e.g., new subnets, new DevBox definitions, governance policy changes).
-- Both tiers store their state in the same Layer 1 Storage Account, under different state keys.
-
-### 5.2 Platform LZ resource review — org vs. project scoping
-
-Each resource created by the Platform LZ must be evaluated for whether it truly belongs at the organization level (shared across all projects) or should be moved to the project level (created per project). The following table summarizes the review:
-
-| Resource                          | Current Scope                | Correct Scope         | Verdict & Rationale                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| --------------------------------- | ---------------------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Identity RG**                   | Platform (org)               | **Platform (org)** ✅ | The identity RG is a shared resource container. It creates no identities itself — UAMIs are created at project deployment time (Tier 2) inside this RG. Keeping a shared RG at the org level is valid: it provides a predictable, centrally-managed location for all project UAMIs, simplifies RBAC, and avoids per-project RG sprawl.                                                                                                                         |
-| **Agents RG**                     | Platform (org)               | **Needs split** ⚠️    | The agents RG currently hosts ACR, ACA Environment, Log Analytics, and container-run UAMI. ACR and Log Analytics are correctly org-scoped (shared image registry and centralized logging). However, the ACA Environment (runner compute) should be project-scoped — see below. The agents RG should be retained for org-scoped resources (ACR, Log Analytics, container-run UAMI), but runner compute should move to the project level.                        |
-| **ACR (Container Registry)**      | Platform (org)               | **Platform (org)** ✅ | Shared container image registry for runner images. All projects pull runner images from the same ACR. This is correctly scoped at the org level.                                                                                                                                                                                                                                                                                                               |
-| **Log Analytics Workspace**       | Platform (org)               | **Platform (org)** ✅ | Centralized logging for agent/runner operations. Org-level scoping provides a single pane of glass for platform operations. Correctly shared.                                                                                                                                                                                                                                                                                                                  |
-| **Container-run UAMI**            | Platform (org)               | **Platform (org)** ✅ | A shared identity used for pulling container images from ACR and reading Key Vault secrets during runner execution. Correctly scoped at the org level since it accesses org-level resources (ACR, Key Vault).                                                                                                                                                                                                                                                  |
-| **ACA Environment**               | Platform (org) → **Project** | **Project** ✅        | The ACA Environment should be moved from the Platform LZ to the project level. Each project creates its own ACA Environment inside its effective runner subnet (`platform` mode = project-dedicated ACA subnet in the Platform LZ VNet; `byo` mode = user-provided BYO subnet). The Platform LZ continues to provide shared infrastructure (ACR, Log Analytics, container-run UAMI, private DNS zones) consumed by project-level ACA Environments. See §5.4.1. |
-| **Network RG + Platform VNet**    | Platform (org)               | **Platform (org)** ✅ | The platform-managed VNet with subnets, DNS zones, and NAT gateway is correctly org-scoped. It provides shared network infrastructure for projects using `network_mode = "platform"`. BYO VNet projects bypass this entirely.                                                                                                                                                                                                                                  |
-| **Private DNS Zones**             | Platform (org)               | **Platform (org)** ✅ | Shared DNS zones for private endpoint resolution. BYO VNet projects link their VNet to these zones. Correctly org-scoped.                                                                                                                                                                                                                                                                                                                                      |
-| **Private Endpoints (bootstrap)** | Platform (org)               | **Platform (org)** ✅ | Private endpoints to the bootstrap Storage Account and Key Vault are org-level resources. Correctly scoped.                                                                                                                                                                                                                                                                                                                                                    |
-| **Dev Center**                    | Platform (org)               | **Platform (org)** ✅ | The Dev Center is a singleton org-level resource. DevBox definitions (images, SKUs) are defined here and shared across all projects. DevBox project pools are created at the project level referencing the org-level Dev Center. Correctly scoped.                                                                                                                                                                                                             |
-| **Container image build tasks**   | Platform (org)               | **Platform (org)** ✅ | ACR tasks for building runner container images. Shared across all projects. Correctly scoped.                                                                                                                                                                                                                                                                                                                                                                  |
-| **VCS governance resources**      | Platform (org)               | **Platform (org)** ⚠️ | Org-level rulesets (GitHub) and agent pools (Azure DevOps) belong at the platform level. Governance is part of the target architecture (Section 9).                                                                                                                                                                                                                                                                                                            |
-
-#### Key finding: ACA Environment should be project-scoped
-
-The most significant finding is that the **ACA Environment** (Azure Container Apps Environment for self-hosted runners) should be **moved from Platform LZ to the project module**:
-
-1. **Network isolation requirement:** Self-hosted runners must operate in the project's network context. For BYO VNet projects, the runner's ACA Environment must be in the project's VNet (with `Microsoft.App/environments` subnet delegation). The platform VNet's ACA Environment cannot be shared because ACA Environments are bound to a single VNet.
-
-2. **Current inconsistency:** The document's Section 8 (BYO VNet) already notes that BYO VNet projects create their own ACA Environment (Decision #6), but Section 5.2 still lists the ACA Environment as a shared platform resource. This is contradictory.
-
-3. **Recommended design:**
-   - **Platform LZ** provides: ACR, Log Analytics, container-run UAMI, container image build tasks — _shared infrastructure_ that all runner environments consume.
-   - **Project module** creates: ACA Environment (in the project's VNet or the platform VNet subnet), ACA runner jobs — _per-project runner compute_.
-   - For `network_mode = "platform"`: the project module creates its ACA Environment in the platform VNet's ACA subnet (subnet ID provided by LZ output).
-   - For `network_mode = "byo"`: the project module creates its ACA Environment in the BYO VNet's ACA subnet (subnet ID provided by user input).
-
-```text
-Platform LZ (Tier 1)                    Project (Tier 2)
-┌───────────────────────────┐           ┌──────────────────────────────────┐
-│ Provides (shared):        │           │ Creates (per project):           │
-│ • ACR (runner images)     │──────────►│ • ACA Environment               │
-│ • Log Analytics           │           │   (in platform VNet or BYO VNet) │
-│ • Container-run UAMI      │           │ • ACA runner jobs                │
-│ • Container image tasks   │           │ • ACI runner instances (if ACI)  │
-│ • Platform VNet + subnets │           │                                  │
-│                           │           │ Consumes from LZ:                │
-│ No longer creates:        │           │ • ACR login server               │
-│ • ACA Environment ← moved│           │ • Log Analytics workspace ID     │
-│                           │           │ • Container-run UAMI ID          │
-│                           │           │ • Subnet IDs (platform or BYO)   │
-└───────────────────────────┘           └──────────────────────────────────┘
-```
-
-#### Identity RG rationale
-
-The Identity RG pattern (empty org-level RG, populated at project time) is valid and useful for the following reasons:
-
-- **Centralized RBAC:** A single identity RG allows platform administrators to set consistent access policies for all UAMIs in one place.
-- **Discoverability:** All project UAMIs are co-located, making auditing and lifecycle management straightforward.
-- **No per-project RG overhead:** Avoids creating a separate identity RG per project, which would increase management surface.
-- **The RG itself is not empty at runtime** — it contains all project UAMIs after projects are provisioned.
-
-### 5.3 What stays the same (revised)
-
-- Bootstrap resources (Storage Account, Key Vault)
-- Identity resource group (shared container for project UAMIs)
-- Agents resource group for org-scoped resources (ACR, Log Analytics, container-run UAMI) — the ACA Environment moves out of this RG at the project level per Section 5.4.1
-- Network resource group and platform-managed VNet creation
-- Dev Center and DevBox definitions
-- Container image build tasks
-
-> **Note:** "What stays the same" refers to resources that remain at the organization level.
-
-### 5.4 What changes (target architecture)
-
-> **Note:** The subsections below describe the **target architecture**. §5.4.1 is the formalized target for the ACA Environment refactor; §5.4.2 and §5.4.3 are also part of the target architecture.
-
-#### 5.4.1 ACA Environment moved to project level (TARGET ARCHITECTURE)
-
-**Target design.** The ACA Environment (runner compute plane) is a **project-level** resource. It is created by the project module (`project_github` / `project_azuredevops`) inside the **project's DevOps VNet** — either the platform VNet (when `network_mode = "platform"`) or the BYO VNet (when `network_mode = "byo"`). The Platform LZ no longer creates an ACA Environment.
-
-**Why this is correct:**
-
-1. An Azure Container Apps Environment is bound to **exactly one VNet** at creation time. A single org-level ACA Environment cannot serve projects whose BYO VNets are disjoint from the platform VNet. Making the ACA Environment project-scoped removes this structural conflict.
-2. Self-hosted runners that execute Terraform against the project's target subscriptions need network line-of-sight to the Azure resources they deploy (private endpoints on Storage, Key Vault, SQL, private-linked PaaS services, peered application VNets). Those network paths are defined by the **project's DevOps VNet**, so the runner compute must live there.
-3. Cross-project compute isolation: A runner outage, scaling limit, or misconfiguration in one project's ACA Environment does not affect another project.
-
-**Responsibility split (target):**
-
-| Layer                 | Provides                                                                                                                                                                                    |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Platform LZ           | ACR (runner images), Log Analytics Workspace (logging sink), container-run UAMI (image pull + KV secret access), container image build tasks, platform VNet + subnets, private DNS zones    |
-| Project (LZ-consumer) | ACA Environment (in project DevOps VNet), ACA Jobs / ACI runner resources, runner group / agent pool registration, project-level private endpoints, Layer 2 Storage Account for project IaC |
-
-**Subnet resolution (target):**
-
-```text
-network_mode = "platform"                network_mode = "byo"
-─────────────────────────                ────────────────────
-ACA Environment subnet:                  ACA Environment subnet:
-  devops_network.aca_subnet_id             byo_vnet.container_app_subnet_id
-  (from LZ remote state)                   (from user input, must have
-                                            Microsoft.App/environments
-                                            delegation)
-```
-
-**LZ output changes required:**
-
-- **Remove:** `container_app_environment_id` (and related ACA Environment fields) from `devops_agents` output.
-- **Add (or keep):** `aca_subnet_id` on `devops_network` output so platform-mode projects can place their own ACA Environment in the correct subnet.
-- **Keep:** `acr_login_server`, Log Analytics workspace ID, container-run UAMI principal/client ID — these are the shared dependencies that project-level ACA Environments bind to.
-
-**Migration note.** This is a **breaking change** for existing deployments: the ACA Environment resource identity moves from the LZ state file to each project's state file. The migration step is:
-
-1. `terraform state rm` the ACA Environment resource from the LZ state.
-2. Delete the org-level ACA Environment in Azure (or leave it for decommissioning after all projects migrate).
-3. Apply the project module, which creates a new ACA Environment in the project's DevOps VNet and re-registers runners.
-4. Re-issue runner registration tokens (PATs/OIDC) since runner identity is rebound to the new environment.
-
-The current code path (ACA Environment at LZ, consumed via `container_app_environment_id`) works for `network_mode = "platform"` projects; BYO VNet projects cannot use it and require this refactor.
-
-#### 5.4.2 Governance outputs (PROPOSED)
-
-The LZ will expose organizational governance settings that projects inherit:
-
-```hcl
-# New file: devops/lz/_variables.governance.tf
-
-variable "org_default_branch_rules" {
-  description = "Default branch protection rules applied to all project repositories"
-  type = object({
-    require_pull_request   = optional(bool, true)
-    required_review_count  = optional(number, 1)
-    require_status_checks  = optional(bool, true)
-    dismiss_stale_reviews  = optional(bool, true)
-    require_code_owners    = optional(bool, false)
-  })
-  default = {}
-}
-
-variable "org_runner_group_defaults" {
-  description = "Default runner group configuration for the organization"
-  type = object({
-    visibility             = optional(string, "selected")
-    allows_public_repos    = optional(bool, false)
-  })
-  default = {}
-}
-
-variable "org_repository_defaults" {
-  description = "Default settings for all repositories in the organization"
-  type = object({
-    default_visibility            = optional(string, "private")
-    delete_branch_on_merge        = optional(bool, true)
-    allow_squash_merge            = optional(bool, true)
-    allow_merge_commit            = optional(bool, true)
-    allow_rebase_merge            = optional(bool, false)
-    vulnerability_alerts_enabled  = optional(bool, true)
-  })
-  default = {}
-}
-```
-
-#### 5.4.3 Proposed new outputs for project consumption
-
-> **Note:** The outputs below are **target additions** to `devops/lz/_outputs.tf`.
-
-```hcl
-# Proposed additions to devops/lz/_outputs.tf
-
-output "org_governance" {
-  value = {
-    default_branch_rules    = var.org_default_branch_rules
-    runner_group_defaults   = var.org_runner_group_defaults
-    repository_defaults     = var.org_repository_defaults
-  }
-  description = "Organization-level governance defaults inherited by projects"
-}
-
-output "network_mode_info" {
-  value = {
-    platform_vnet_id                = length(module.vnet) > 0 ? module.vnet[0].output.vnet_id : null
-    platform_vnet_name              = length(module.vnet) > 0 ? local.vnet_name : null
-    platform_vnet_resource_group    = local.enable_network_resources ? local.network_resource_group_name : null
-    private_endpoint_subnet_id  = local.private_endpoint_subnet_id
-    aca_subnet_id               = local.container_app_subnet_id
-    aci_subnet_id               = local.container_instance_subnet_id
-    devbox_subnet_id            = local.devbox_subnet_id
-    private_dns_zone_ids            = { for index, z in azurerm_private_dns_zone.this : index => z.id }
-  }
-  description = "Network information for projects using platform or BYO networking"
-}
-```
-
-### 5.5 Runner compute model: Self-hosted (ACA) vs. GitHub-hosted with Azure private networking
-
-> **Context.** Two architecturally distinct approaches exist for running CI/CD jobs that need private-network access to Azure resources deployed in a closed VNet. This section compares them and explains why this Landing Zone uses self-hosted runners on Azure Container Apps (ACA).
-
-#### 5.5.1 Option A — Self-hosted runner on a container platform (ACA / ACI)
-
-The project module creates an **ACA Environment** in the project's DevOps VNet (§5.4.1) and registers ephemeral **ACA Jobs** as self-hosted runners. The Platform LZ provides the shared runner container image (built and stored in the org-level ACR), the Log Analytics sink, and the container-run UAMI.
-
-| Property                           | Detail                                                                                                                                                                  |
-| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **VCS platform support**           | GitHub Actions **and** Azure DevOps Pipelines (via the same ACA compute, different agent/runner registration)                                                           |
-| **GitHub plan requirement**        | Any plan (Free, Team, Enterprise) — self-hosted runners are available on all plans                                                                                      |
-| **Azure region availability**      | Any Azure region where ACA is available                                                                                                                                 |
-| **Runner image control**           | Full — custom Dockerfile, pre-installed tools, caching layers, pinned OS versions; images are built by org-level ACR tasks                                              |
-| **Network integration**            | ACA Environment is bound to the project's VNet at creation time (subnet delegation: `Microsoft.App/environments`); runner gets a private IP inside the project's subnet |
-| **Static / predictable egress IP** | Yes — the Platform LZ NAT Gateway (platform mode) or the enterprise spoke's NAT/firewall (BYO mode) provides stable egress IPs for SaaS allowlists                      |
-| **Compute cost model**             | Azure consumption-based (ACA vCPU-seconds + memory-seconds); no per-minute GitHub runner charges                                                                        |
-| **Management overhead**            | Platform team maintains runner images (Dockerfile, OS patches, tool updates), ACA Environment scaling, and runner registration tokens                                   |
-
-#### 5.5.2 Option B — GitHub-hosted runner with Azure private networking (APES / VNet injection)
-
-GitHub's **Azure Private Networking** feature (sometimes called APES — Actions Private Endpoint Service) lets you use GitHub-managed runner VMs whose Network Interface Card (NIC) is injected into a customer-owned Azure subnet at job start time. The runner gets a private IP in the customer VNet and is destroyed after the job completes.
-
-| Property                           | Detail                                                                                                                                                                    |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **VCS platform support**           | **GitHub Actions only** — Azure DevOps has no equivalent VNet-injection feature for Microsoft-hosted agents                                                               |
-| **GitHub plan requirement**        | **Team or Enterprise Cloud** — Free plan is not supported                                                                                                                 |
-| **Azure region availability**      | Limited — only specific Azure regions are enabled; not all regions are supported                                                                                          |
-| **Runner image control**           | Limited — GitHub-managed standard images (Ubuntu, Windows); no custom Dockerfile or pre-installed tool control                                                            |
-| **Network integration**            | Subnet delegation: `GitHub.Network/networkSettings`; GitHub injects a runner NIC at job start; NIC is removed after the job                                               |
-| **Static / predictable egress IP** | **No** — runners receive dynamic IPs from the subnet; no NAT Gateway binding (static IP is not supported by APES)                                                         |
-| **Compute cost model**             | GitHub-hosted runner minutes pricing (per-minute charges on top of the Enterprise/Team license) + standard Azure networking costs                                         |
-| **Management overhead**            | Near-zero for the runner itself (GitHub manages the VM, OS, patches); customer manages only the Azure VNet/subnet and the `GitHub.Network` resource provider registration |
-
-#### 5.5.3 Comparison and architectural decision
-
-```text
-┌──────────────────────────────┬─────────────────────────────────┬──────────────────────────────────────────┐
-│ Criterion                    │ Self-hosted (ACA)               │ GitHub-hosted + Azure private networking │
-├──────────────────────────────┼─────────────────────────────────┼──────────────────────────────────────────┤
-│ GitHub + ADO parity          │ ✅ Both (same ACA compute)      │ ❌ GitHub only — no ADO equivalent       │
-│ GitHub plan flexibility      │ ✅ Any plan                     │ ⚠️ Team or Enterprise Cloud only         │
-│ Azure region availability    │ ✅ Any ACA-supported region     │ ⚠️ Limited regions                       │
-│ Runner image customization   │ ✅ Full (custom Dockerfile)     │ ❌ GitHub-standard images only            │
-│ Static egress IP             │ ✅ NAT Gateway                  │ ❌ Dynamic IPs only                       │
-│ Operational overhead         │ ⚠️ Image builds, patching,     │ ✅ Near-zero (GitHub-managed)             │
-│                              │    scaling, token rotation      │                                          │
-│ Cost model                   │ Azure consumption (ACA)         │ GitHub minutes + Azure networking        │
-│ Subnet delegation            │ Microsoft.App/environments      │ GitHub.Network/networkSettings           │
-│ Runner lifecycle              │ Ephemeral ACA Job per run      │ Ephemeral VM + NIC per job               │
-└──────────────────────────────┴─────────────────────────────────┴──────────────────────────────────────────┘
-```
-
-**Why this LZ uses self-hosted runners on ACA (Option A):**
-
-1. **Dual VCS platform support (Goal 6 — GitHub / Azure DevOps parity).** This LZ's core design goal is to provide a unified abstraction over GitHub and Azure DevOps (§7). Azure DevOps has no VNet-injection feature for Microsoft-hosted agents — self-hosted agents are the **only** option for private-network deployments in ADO Pipelines. Choosing Option B for GitHub would force a fundamentally different runner architecture for ADO projects, breaking the unified project module contract.
-
-2. **No GitHub plan lock-in.** Self-hosted runners work with _any_ GitHub plan, including Free. APES requires Team or Enterprise Cloud. The Landing Zone should not impose a GitHub licensing constraint on every consumer.
-
-3. **Full runner image control.** Self-hosted runners use a custom Dockerfile maintained by the platform team (built and stored in the org-level ACR). This enables pre-installed Terraform versions, Azure CLI, custom tools, security hardening, and deterministic caching — critical for enterprise IaC workflows. GitHub-hosted images are managed by GitHub and cannot be customized.
-
-4. **Static egress IPs.** The Platform LZ NAT Gateway provides predictable egress IPs that can be allowlisted by SaaS providers (GitHub API, Terraform Registry, package registries, Microsoft Entra). APES runners receive dynamic IPs and do not support NAT Gateway binding.
-
-5. **Azure region flexibility.** ACA is available in all major Azure regions. APES VNet injection is limited to specific regions, which may not match the customer's Azure footprint.
-
-**When Option B (GitHub-hosted + APES) may be appropriate:**
-
-- The organization uses **only GitHub** (no Azure DevOps), is on **Team or Enterprise Cloud**, operates in a **supported Azure region**, does not need custom runner images or static egress IPs, and values **near-zero runner management overhead** over customization flexibility. In this scenario, the operational simplicity of GitHub-managed runners may outweigh the customization benefits of self-hosted ACA.
-
-> **Note for Azure DevOps.** Microsoft-hosted agents do not support VNet injection as of 2025. For Azure DevOps Pipelines with private-network requirements, **self-hosted agents** (on VMs, container instances, or ACA) are the only option. This LZ's ACA-based runner model works identically for ADO self-hosted agents, which is the primary reason for the architectural choice.
+## Architecture Decision Records (ADRs)
+
+The following ADR documents contain detailed design decisions for each topic area. Each ADR includes context, the decision made, full technical detail, and related decisions.
+
+| ADR                                                      | Topic                              | Summary                                                                                                        |
+| -------------------------------------------------------- | ---------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| [ADR-001](./adr/ADR-001-platform-lz-resource-scoping.md) | Platform LZ Resource Scoping       | Which resources belong at org level vs. project level. Key finding: ACA Environment should be project-scoped.  |
+| [ADR-002](./adr/ADR-002-runner-compute-model.md)         | Runner Compute Model               | Self-hosted runners on ACA chosen over GitHub-hosted + APES for five architectural reasons.                    |
+| [ADR-003](./adr/ADR-003-project-multi-repo-model.md)     | Project & Multi-Repo Model         | Project definition, multi-repo support with CI/CD profiles, identity allocation strategy, subset environments. |
+| [ADR-004](./adr/ADR-004-github-ado-abstraction.md)       | GitHub / Azure DevOps Abstraction  | Unified platform-agnostic "Project" concept with a shared input interface.                                     |
+| [ADR-005](./adr/ADR-005-vnet-architecture.md)            | VNet Architecture (Platform & BYO) | Three-tier VNet model, `platform` and `byo` network modes, seven consistency rules, detailed network diagrams. |
+| [ADR-006](./adr/ADR-006-organization-governance.md)      | Organization Governance            | Platform-agnostic governance variables driving GitHub rulesets and ADO branch policies.                        |
+| [ADR-007](./adr/ADR-007-gitops-onboarding.md)            | GitOps-Driven Onboarding           | Issue → PR → merge → `terraform apply` pipeline via a self-contained governance repository.                    |
+| [ADR-008](./adr/ADR-008-naming-collision-resistance.md)  | Naming & Collision Resistance      | Portfolio-safe naming patterns, tfstate key conventions, and UAMI naming with hash-based collision resistance. |
 
 ---
 
-## 6. Project Definition & Multi-Repo Model
-
-> **Note:** Sections 6.3–6.7 describe the **target design** for multi-repo support, repository profiles, per-repo identities, and subset environments. **Currently**, the `project_github` module supports only a single main repo + optional templates repo (Section 6.2), with a single hardcoded `infra`-style workflow profile and one UAMI per environment × job type (plan/apply) shared across repos.
-
-### 6.1 Design philosophy: Separation is a recommendation, not a mandate
-
-Repository profiles (`infra`, `app`, `library`, `docs`) are **recommended patterns** that map to different CI/CD workflow shapes. They are not a mandate to split every project into multiple repos.
-
-**A single repository containing both infra and app code is fully supported.** In that case, the user assigns the `infra` profile (which includes the most comprehensive branch/environment strategy) and the single repo gets the full `validate → plan → apply` pipeline. The multi-repo pattern is offered for teams who prefer separation of concerns, independent release cadences, or fine-grained RBAC.
-
-| Scenario                        | Configuration                                            | Result                                                               |
-| ------------------------------- | -------------------------------------------------------- | -------------------------------------------------------------------- |
-| Single repo (current behavior)  | `repositories = []` or single entry with profile `infra` | Identical to today                                                   |
-| Separated infra + app           | Two entries: `profile = "infra"` + `profile = "app"`     | Separate workflow shapes, optionally separate UAMIs                  |
-| Monorepo with multiple concerns | Single entry with profile `infra`                        | One repo gets the full pipeline; internal structure is user's choice |
-
-### 6.2 Current design (single repo)
-
-```hcl
-# Today
-project_name = "my-project"
-# → creates 1 repo: "my-project"
-# → creates 1 templates repo: "my-project-templates" (optional)
-```
-
-### 6.3 Target design (multi-repo)
-
-```hcl
-# New variable: _variables.repositories.tf
-
-variable "repositories" {
-  description = "List of repositories for this project"
-  type = list(object({
-    name        = string
-    profile     = string          # "infra" | "app" | "library" | "docs"
-    description = optional(string, "")
-    visibility  = optional(string) # null → inherit org default
-    settings    = optional(object({
-      allow_merge_commit     = optional(bool)
-      allow_squash_merge     = optional(bool)
-      allow_rebase_merge     = optional(bool)
-      delete_branch_on_merge = optional(bool)
-      has_issues             = optional(bool, true)
-      has_projects           = optional(bool, true)
-      vulnerability_alerts   = optional(bool, true)
-    }))
-    branch_overrides = optional(map(object({
-      required_review_count = optional(number)
-      require_code_owners   = optional(bool)
-    })))
-    environments = optional(list(string))  # subset of project environments; null → all
-  }))
-
-  # Backward-compatible default: if empty, fall back to single-repo behavior
-  default = []
-
-  validation {
-    condition = length(var.repositories) == 0 || length(var.repositories) == length(distinct([for r in var.repositories : r.name]))
-    error_message = "Repository names must be unique within a project."
-  }
-}
-```
-
-#### Backward compatibility
-
-When `repositories = []` (default), the module falls back to the current single-repo behavior using `project_name` as the repository name. This ensures zero breaking changes for existing users.
-
-```hcl
-# In _locals.tf
-
-locals {
-  # If repositories list is provided, use it; otherwise fall back to current behavior
-  _repositories = length(var.repositories) > 0 ? var.repositories : [
-    {
-      name               = local._project_name
-      profile            = "infra"
-      description        = local._project_name
-      visibility         = null
-      settings           = null
-      branch_overrides   = null
-      environments       = null
-    }
-  ]
-}
-```
-
-### 6.4 Repository profiles
-
-Profiles define the **workflow shape** for a repository. They are defined in the `github_workflows` module and control which CI/CD workflows and branch strategies are generated.
-
-| Profile   | Branches                               | CI Workflow               | CD Workflow                | Environments                                       |
-| --------- | -------------------------------------- | ------------------------- | -------------------------- | -------------------------------------------------- |
-| `infra`   | `features/*`, `dev`, `staging`, `main` | `validate` + `plan` on PR | `plan` + `apply` on push   | `features`, `development`, `staging`, `production` |
-| `app`     | `features/*`, `dev`, `staging`, `main` | `build` + `test` on PR    | `build` + `deploy` on push | `development`, `staging`, `production`             |
-| `library` | `features/*`, `main`                   | `build` + `test` on PR    | `publish` on tag           | —                                                  |
-| `docs`    | `main`                                 | —                         | —                          | —                                                  |
-
-> **Note:** The `docs` profile generates **no CI/CD workflows**. It creates the repository with default branch protection only. This profile is intended for documentation-only repos (wikis, ADRs, runbooks) that don't need build or deployment pipelines.
-
-### 6.5 Identity (UAMI) allocation strategy
-
-#### Where identities are created
-
-UAMIs are **created at project deployment time** (Tier 2), not pre-registered at the Platform LZ level. The Platform LZ (Tier 1) only provides the **identity resource group** where UAMIs are placed.
-
-The subscription-to-environment mapping is defined in each project's `terraform.tfvars` via the `subscriptions` variable. The Platform LZ does **not** maintain a global subscription registry. Each project declares which Azure subscriptions it needs for its environments, and the project module creates UAMIs and federated identity credentials accordingly.
-
-**Identity model:** The `github_workflows` module generates a `github_environments` map keyed by `{branch_key}-{job_type}` (e.g., `feat-plan`, `dev-apply`, `stg-plan`, `prod-apply`). The project module creates one UAMI per entry — 7 UAMIs per project (4 environments × plan + 3 environments × apply, since `features` has no `apply` job). Each UAMI receives a single federated identity credential for GitHub OIDC.
-
-```text
-Platform LZ (Tier 1)                Project (Tier 2)
-┌─────────────────────┐             ┌──────────────────────────────┐
-│ Creates:            │             │ Reads:                       │
-│ • identity RG       │────────────►│ • identity RG name from LZ   │
-│   (empty at first)  │             │                              │
-│                     │             │ Creates (current):           │
-│                     │             │ • 7 UAMIs (env × job type)   │
-│                     │             │   feat-plan, dev-plan,       │
-│                     │             │   stg-plan, prod-plan,       │
-│                     │             │   dev-apply, stg-apply,      │
-│                     │             │   prod-apply                 │
-│                     │             │ • 7 Federated identity creds │
-│                     │             │ • Role assignments on subs   │
-│                     │             │   (only for envs in          │
-│                     │             │    subscriptions map)         │
-│                     │             │                              │
-│                     │             │ Subscription map comes from: │
-│                     │             │ • project's terraform.tfvars │
-└─────────────────────┘             └──────────────────────────────┘
-```
-
-#### Shared vs per-repository identities
-
-Today: one UAMI per environment × job type (plan/apply) per project.
-
-Target: one UAMI per environment × job type (plan/apply) **per repository** (or shared per project if the user opts in).
-
-```hcl
-variable "shared_identities" {
-  description = "Whether to share UAMI across all repositories in the project (true) or create per-repository identities (false)"
-  type        = bool
-  default     = true   # backward compatible
-}
-```
-
-When `shared_identities = true`: behavior is identical to today — one set of UAMIs covers all repos in the project.
-
-When `shared_identities = false`: each repository gets its own set of UAMIs, enabling fine-grained RBAC (e.g., the `infra` repo has `Contributor`, the `app` repo has only `AcrPush` + `Web Apps Contributor`).
-
-#### UAMI naming
-
-UAMIs use a mixed naming pattern that keeps project and repo human-readable while hashing env/job details:
-
-```
-uami-<project>-<repo>-<hash>          # per-repo identities (shared_identities = false)
-uami-<project>-<hash>                 # shared identities (shared_identities = true)
-```
-
-See [Section 11.3](#113-uami-naming-convention) for the full naming convention, hash derivation, and examples.
-
-### 6.6 Sample `terraform.tfvars` — multi-repo project
-
-```hcl
-# terraform.tfvars — Project "contoso-ecommerce"
-
-target_subscription_id = "00000000-0000-0000-0000-000000000000"
-project_name           = "contoso-ecommerce"
-location               = "japaneast"
-
-tags = {
-  appTag     = "contoso-ecommerce"
-  envTag     = "prod"
-  projectTag = "devops"
-  purposeTag = "alz"
-}
-
-# Multiple repositories for this project
-repositories = [
-  {
-    name    = "contoso-ecommerce-infra"
-    profile = "infra"
-    description = "Azure infrastructure for the Contoso e-commerce platform"
-  },
-  {
-    name    = "contoso-ecommerce-api"
-    profile = "app"
-    description = "Backend API services"
-  },
-  {
-    name    = "contoso-ecommerce-web"
-    profile = "app"
-    description = "Frontend web application"
-    environments = ["development", "staging", "production"]  # no features env
-  },
-  {
-    name    = "contoso-ecommerce-shared"
-    profile = "library"
-    description = "Shared libraries and utilities"
-  },
-]
-
-subscriptions = {
-  "features" = {
-    id = "11111111-1111-1111-1111-111111111111"
-  },
-  "development" = {
-    id = "22222222-2222-2222-2222-222222222222"
-  },
-  "staging" = {
-    id = "33333333-3333-3333-3333-333333333333"
-  },
-  "production" = {
-    id = "44444444-4444-4444-4444-444444444444"
-  },
-}
-
-# Network mode
-network_mode = "platform"  # use LZ-managed VNet
-
-# Runner options
-use_templates_repository = true
-use_self_hosted_runners  = true
-self_hosted_runners_type = "aca"
-```
-
-### 6.7 Sample `terraform.tfvars` — subset environments (dev + prod only)
-
-```hcl
-# terraform.tfvars — Project with only development and production environments
-
-target_subscription_id = "00000000-0000-0000-0000-000000000000"
-project_name           = "contoso-internal-tool"
-location               = "japaneast"
-
-tags = {
-  appTag     = "contoso-internal-tool"
-  envTag     = "prod"
-  projectTag = "devops"
-}
-
-# Single repository (backward-compatible; repositories = [] uses project_name as repo name)
-
-# Only two environments — no features or staging
-subscriptions = {
-  "development" = {
-    id = "22222222-2222-2222-2222-222222222222"
-  },
-  "production" = {
-    id = "44444444-4444-4444-4444-444444444444"
-  },
-}
-
-network_mode = "platform"
-use_self_hosted_runners = true
-self_hosted_runners_type = "aca"
-```
-
-> **Note (target behavior):** This sample shows the intended subset environment support described in Decision #7. The target architecture supports creating only the environments present in the `subscriptions` map — the matching GitHub Actions Environments, UAMIs, branches, and federated credentials.
-
----
-
-## 7. GitHub vs Azure DevOps — Structural Differences & Abstraction
-
-> **Note:** The unified interface described in Sections 7.2–7.4 is the **target design**. The `project_azuredevops` module will implement the same interface as `project_github`.
-
-### 7.1 The structural mismatch
-
-GitHub and Azure DevOps have fundamentally different organizational hierarchies:
-
-```text
-GitHub                              Azure DevOps
-──────                              ──────────────
-Organization                        Organization
-├── Repository A                    ├── Project X
-├── Repository B                    │   ├── Repository A
-├── Repository C                    │   ├── Repository B
-├── Teams (org-wide)                │   ├── Pipelines
-├── Runner Groups (org-wide)        │   ├── Environments
-├── Org Rulesets (org-wide)         │   ├── Service Connections
-└── Environments (per-repo)         │   ├── Agent Pools (project-scoped)
-                                    │   └── Teams/Groups (project-scoped)
-                                    ├── Project Y
-                                    │   └── ...
-                                    └── Org-level Agent Pools
-```
-
-Key differences:
-
-| Aspect                  | GitHub                                          | Azure DevOps                                                      |
-| ----------------------- | ----------------------------------------------- | ----------------------------------------------------------------- |
-| **"Project" concept**   | No native project; repos are flat under the org | First-class `Project` container with its own security boundary    |
-| **Environments**        | Defined per repository                          | Defined per project                                               |
-| **Pipelines**           | Defined in repo (GitHub Actions workflows)      | Defined in project, pointing to repo files                        |
-| **Teams/permissions**   | Org-wide teams with per-repo access             | Project-scoped teams + org-level groups                           |
-| **Agent/Runner pools**  | Org-level runner groups                         | Both org-level and project-scoped pools                           |
-| **Branch protection**   | Per-repo rulesets OR org-level rulesets         | Per-repo branch policies within a project                         |
-| **Service Connections** | N/A (OIDC federation per environment)           | Project-scoped service connections (workload identity federation) |
-
-### 7.2 The abstraction: DevOps LZ "Project"
-
-The DevOps Landing Zone introduces a **logical "Project"** concept that maps differently to each VCS platform:
-
-```text
-DevOps LZ Project                    GitHub Mapping                Azure DevOps Mapping
-──────────────────                    ──────────────                ────────────────────
-project_name = "contoso-ecommerce"    Naming convention:            ADO Project:
-                                      repos prefixed with           "contoso-ecommerce"
-                                      "contoso-ecommerce-*"
-
-repositories = [                      GitHub repos:                 ADO repos inside project:
-  { name="...-infra", ... },          contoso-ecommerce-infra       contoso-ecommerce-infra
-  { name="...-app",   ... },          contoso-ecommerce-app         contoso-ecommerce-app
-]
-
-environments = {                      GitHub Environments            ADO Environments:
-  development, staging, production    (per repo, with env prefix)    (per project)
-}
-
-identities = {                        OIDC federation                Workload identity federation
-  UAMI per env × job                  (per environment)              (via service connections)
-}
-```
-
-### 7.3 Unified interface design
-
-Both `project_github` and `project_azuredevops` modules share the same **input interface** for project-level configuration:
-
-```hcl
-# Shared input interface (both project_github and project_azuredevops)
-
-variable "project_name"    { ... }   # → GitHub: naming prefix  │ ADO: project name
-variable "repositories"    { ... }   # → GitHub: org-level repos │ ADO: project-scoped repos
-variable "subscriptions"   { ... }   # → Both: Azure subscription per environment
-variable "network_mode"    { ... }   # → Both: platform or byo
-variable "byo_vnet"        { ... }   # → Both: BYO VNet config
-variable "shared_identities" { ... } # → Both: shared vs per-repo UAMIs
-```
-
-Platform-specific variables are additive:
-
-```hcl
-# GitHub-specific
-variable "use_runner_group"          { ... }
-variable "use_templates_repository"  { ... }
-
-# Azure DevOps-specific
-variable "create_project"            { ... }   # create or reference existing ADO project
-variable "use_separate_repo_for_pipeline_templates" { ... }
-```
-
-### 7.4 Governance consistency
-
-For governance to be consistent across both platforms, the Platform LZ defines **platform-agnostic governance defaults** that are then mapped to platform-specific resources:
-
-| DevOps LZ Governance Setting   | GitHub Implementation                          | Azure DevOps Implementation                                 |
-| ------------------------------ | ---------------------------------------------- | ----------------------------------------------------------- |
-| `require_pull_request = true`  | Org ruleset: `pull_request` block              | Branch policy: `azuredevops_branch_policy_min_reviewers`    |
-| `required_review_count = 1`    | Org ruleset: `required_approving_review_count` | Branch policy: `minimum_reviewer_count`                     |
-| `dismiss_stale_reviews = true` | Org ruleset: `dismiss_stale_reviews_on_push`   | (Not directly available; approximated via policy settings)  |
-| `require_status_checks = true` | Org ruleset: `required_status_checks`          | Branch policy: `azuredevops_branch_policy_build_validation` |
-| `runner_group / agent_pool`    | `github_actions_runner_group`                  | `azuredevops_agent_pool` (org-level)                        |
-
-This mapping is implemented in separate files (`governance.github.tf` and `governance.azuredevops.tf`) within the LZ module, driven by the same governance variables.
-
----
-
-## 8. Bring Your Own VNet (BYO VNet)
-
-> **Note:** BYO VNet support is a **proposed feature**. The current `project_github` module does not have a `network_mode` or `byo_vnet` variable. All projects currently use the platform-managed VNet created by `devops/lz`. The design below describes the target architecture.
-
-### 8.0 VNet architecture overview (three-tier model)
-
-Three distinct VNets participate in the end-to-end flow from code commit to deployed Azure resources. Keeping these distinct — and the connectivity between them consistent — is the foundation of the BYO VNet design.
-
-```text
-┌────────────────────────────────────────────────────────────────────────────┐
-│ 1) Platform LZ VNet  (org-scoped, managed by devops/lz)                   │
-│    Purpose: shared infrastructure the DevOps platform itself needs        │
-│    Contents:                                                              │
-│      • Private endpoints for bootstrap Storage Account (Layer 1 tfstate)  │
-│      • Private endpoints for bootstrap Key Vault (VCS PATs, etc.)         │
-│      • DevBox subnet (if DevBox is platform-scoped)                       │
-│      • NAT gateway for egress                                             │
-│      • Private DNS zones (privatelink.*) — linked to this VNet           │
-│    Tfstate: devops-lz.terraform.tfstate (Layer 1)                         │
-└────────────────────────────────────────────────────────────────────────────┘
-                                   │
-                                   │ (always present when enable_private_network = true)
-                                   ▼
-┌────────────────────────────────────────────────────────────────────────────┐
-│ 2) Project DevOps network context  (project-scoped choice — PLATFORM or   │
-│                                   BYO)                                    │
-│    Purpose: where the project's CI/CD compute runs                        │
-│    Chosen by: network_mode = "platform" | "byo"                           │
-│                                                                           │
-│    Mode "platform": project-dedicated subnet slice inside the shared      │
-│                     Platform LZ VNet (selected via LZ outputs)            │
-│    Mode "byo":      user-provided VNet (pre-existing spoke)               │
-│                                                                           │
-│    Contents (created/placed by project module):                           │
-│      • ACA Environment + runner Jobs (or ACI containers) ← Section 5.4.1  │
-│      • Private endpoint to Layer 2 project tfstate Storage Account        │
-│      • DevBox project pool (if per-project DevBox)                        │
-│      • DNS links to platform private DNS zones                            │
-│    Tfstate: projects/<project_name>.terraform.tfstate                     │
-└────────────────────────────────────────────────────────────────────────────┘
-                                   │
-                                   │ runner executes terraform apply against
-                                   │ target subscription → needs network path
-                                   ▼
-┌────────────────────────────────────────────────────────────────────────────┐
-│ 3) Application / Workload VNet(s)  (per-environment, owned by project     │
-│                                      team's own IaC — NOT this LZ)        │
-│    Purpose: where the project's actual application resources are deployed │
-│    Lives in: each target subscription (features / dev / staging / prod)   │
-│    Contents:                                                              │
-│      • App Services, AKS, Functions, SQL, Storage, Key Vault …           │
-│      • Private endpoints on those services                                │
-│    Tfstate: Layer 2 — per-project Storage Account (created by project    │
-│             provisioning; see Section 3.2)                                │
-└────────────────────────────────────────────────────────────────────────────┘
-```
-
-**Key distinction.** This Landing Zone is responsible for (1) the Platform LZ VNet and (2) the project's DevOps network context selection/binding (shared-platform subnet slice or BYO VNet). The Application / Workload VNet (3) is the project team's responsibility and is provisioned by the project team's own Terraform running inside the runner of layer (2). The BYO VNet variable at the project level (Section 8.4) configures layer (2) — **not** layer (3).
-
-#### 8.0.1 Consistency rules between Platform LZ VNet and Project BYO VNet
-
-When a project chooses `network_mode = "byo"`, the project module no longer deploys runner compute into the platform VNet; it deploys into the BYO VNet. However, the Platform LZ still owns several cross-cutting resources that the project must integrate with. These constraints must hold for correct operation:
-
-| #   | Concern                                  | Rule                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| --- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | **Private DNS resolution**               | All private endpoints the runner contacts (ACR for the runner image, the project's Layer 2 tfstate Storage Account, the project's own Key Vault for project secrets, and target-subscription private-link services for resources the runner deploys) must resolve via private DNS. The BYO VNet **must be linked** to the Platform LZ's `privatelink.*` DNS zones for the org-shared records (notably `privatelink.azurecr.io`). The project module performs this linkage via `azurerm_private_dns_zone_virtual_network_link` (one link per zone) using the DNS zone IDs published in `devops_network.private_dns_zone_ids`. The `byo_vnet.link_to_platform_private_dns` flag toggles this. **Note:** the runner does **not** access the bootstrap Storage Account (Layer 1 tfstate is owned by the platform admin's apply path — `_bootstrap` / `devops/lz` / `project_github` provisioning — not by the project team's runner; see §3.2) nor the bootstrap Key Vault (which only stores VCS PATs used by `project_github` at provisioning time). |
-| 2   | **ACR (runner images) reachability**     | The runner must pull its container image from the org-shared ACR (Tab. B in §1). The ACR must be reachable via private endpoint from the BYO VNet — its PE lives in the Platform LZ VNet, so the BYO VNet **must be peered** to the Platform LZ VNet (or otherwise reach the ACR PE through the enterprise hub-and-spoke). Peering and hub transit are the responsibility of the enterprise networking team, not this LZ. The container-run UAMI (platform-scoped) is bound as the `acr_pull` identity of the ACA Job regardless of which VNet the ACA Environment is in.                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| 3   | **Layer 2 SA + project KV reachability** | The runner reads/writes the project's **Layer 2** tfstate from the per-project Storage Account (Table C in §1) and reads the project's secrets from the **project-owned** Key Vault (created by the project module — see §3.2 / §5.4 and Table C). Both are project-scoped and **deployed inside the project's runner network context** — i.e., into the project's BYO VNet in `byo` mode (or into the project-dedicated subnets of the Platform LZ VNet in `platform` mode). They must therefore be in the BYO PE subnet alongside the runner; no peering to the Platform LZ VNet is required for these. They are **not** part of the bootstrap SA/KV.                                                                                                                                                                                                                                                                                                                                                                                            |
-| 4   | **Subnet delegations in BYO VNet**       | The BYO VNet's subnets must have the correct Azure delegations for the runner compute type: `Microsoft.App/environments` for ACA Environments, `Microsoft.ContainerInstance/containerGroups` for ACI, and the DevBox-compatible network configuration for DevBox. The project module enforces these via Terraform preconditions (Section 8.4) — they fail at `plan` time if misconfigured.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| 5   | **Address-space non-overlap**            | The BYO VNet's CIDR must **not overlap** with the Platform LZ VNet CIDR (otherwise peering fails) and ideally must not overlap with any Application / Workload VNet the project will later peer to. This is enforced outside Terraform by the enterprise networking team; the LZ validates peering state at apply time but cannot allocate address space.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| 6   | **DNS isolation for split-horizon**      | BYO projects often operate behind an enterprise DNS forwarder (e.g., Azure Firewall DNS proxy, custom resolver). The platform private DNS zone links established in (1) must coexist with — and not conflict with — the enterprise's own DNS policies. The design mandates **private DNS zones only for Azure private-link records** (`privatelink.*`); public DNS remains under enterprise control.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| 7   | **Consistency across environments**      | For a multi-environment project, the runner VNet is the **same** regardless of which target subscription is being deployed to — the runner compute is project-scoped, not environment-scoped. Connectivity between the runner's VNet and each target subscription's Application/Workload VNet is the responsibility of that subscription's networking setup (typically hub-and-spoke peering or VPN gateway in the hub).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-
-#### 8.0.2 Relationship to Application / Workload VNets
-
-The runner's deployment actions (e.g., creating an App Service with a private endpoint in the dev subscription) require network reachability from the runner's VNet (layer 2) to the target resource's VNet (layer 3). This Landing Zone **does not create** peering between the project DevOps VNet and application VNets. The enterprise networking pattern (typically hub-and-spoke with a central hub) is expected to provide this. The BYO VNet is usually an existing spoke in that topology, which naturally gives the runner the required reachability.
-
-For `network_mode = "platform"`, the Platform LZ VNet serves as the DevOps VNet, and the same peering/hub-and-spoke requirement applies: the Platform LZ VNet must be peered (or otherwise reachable) from each target subscription's Application VNet for the runner to manage private-link resources there.
-
-#### 8.0.3 Why `network_mode = "platform"` is a first-class design choice (not backward compatibility)
-
-`platform` mode is not retained for backward compatibility. It is an intentional, first-class onboarding mode that exists alongside `byo` mode for the following architectural reasons. If `platform` mode were removed, every project would be required to negotiate a pre-provisioned enterprise VNet before the DevOps Landing Zone could be used at all — which is incompatible with the GitOps onboarding goal (§10) and with greenfield product teams.
-
-| Aspect                                              | Value of `network_mode = "platform"`                                                                                                                                                                                                                                                                                                                                             |
-| --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Low-friction onboarding**                         | A project team can stand up its DevOps environment without owning, requesting, or coordinating an enterprise spoke VNet. The Platform LZ already created the VNet, NAT egress, bootstrap private endpoints (SA/KV), and `privatelink.*` DNS zones at org provisioning time; the project just consumes a project-dedicated subnet slice via LZ outputs.                           |
-| **Greenfield / POC / pre-enterprise projects**      | New product lines, prototypes, or early-stage projects often do not yet have an assigned enterprise spoke. `platform` mode makes the DevOps Landing Zone usable on day one for these projects, without blocking them on a central networking ticket.                                                                                                                             |
-| **Automatic satisfaction of the consistency rules** | All seven §8.0.1 consistency rules (DNS zone linkage, bootstrap SA/KV reachability, ACR pull path, ACA subnet delegation, address-space non-overlap, split-horizon DNS, cross-environment VNet consistency) are satisfied by construction in `platform` mode — no peering, no DNS link resource, no firewall ticket. In `byo` mode the project must satisfy them explicitly.     |
-| **Centralized cost and operational hygiene**        | One shared Platform LZ VNet (with project-dedicated subnets) is cheaper than N project-owned VNets and consolidates DNS-zone hygiene, NAT egress IP allocation, and private-endpoint inventory into a single place owned by the platform team.                                                                                                                                   |
-| **Migration ramp to BYO**                           | A project can start in `platform` mode for fast bring-up and later switch to `byo` once enterprise networking provides a spoke, without changing the project module contract (`network_mode` flips from `"platform"` to `"byo"`; the `byo_vnet` block is added). The `terraform state mv` / re-bind path is straightforward because the project module owns the ACA Environment. |
-| **Default safe path**                               | `platform` is the documented default of `network_mode`, so a minimal `terraform.tfvars` works out of the box. `byo` is opt-in for the explicit enterprise integration scenario.                                                                                                                                                                                                  |
-
-When `network_mode = "byo"` is the right choice — and when not.
-
-- Use **`byo`** when the project must land in a pre-provisioned spoke for compliance, central firewall/DNS, address-plan governance, or peering with on-prem.
-- Use **`platform`** for everything else: greenfield projects, POCs, projects that have no central networking constraint, and projects that want zero VNet-related ticket dependencies during onboarding.
-
-In short: BYO mode exists to satisfy enterprise constraints; `platform` mode exists to make those constraints **optional** instead of mandatory. Removing `platform` mode would force the LZ to assume every consumer is an enterprise with an existing spoke, which contradicts the LZ's onboarding and self-service goals.
-
-#### 8.0.4 Why the VNet is created at the Platform LZ layer (not at the project layer) in `platform` mode
-
-§8.0.3 explains _why `platform` mode exists at all_. This subsection answers the orthogonal question: **once we have decided to operate in `platform` mode, why is the VNet itself owned by the Platform LZ (organization) layer, and not created per-project by the project module?** The short answer: in `platform` mode, the VNet is an _organization-shared substrate_, not a project artifact, and several core platform components only function correctly when they all live in (or directly attach to) that single shared VNet. Pushing VNet creation to the project layer would either break those components or force every project to reinvent the platform team's networking work — at which point the project is effectively running BYO mode without an enterprise to back it.
-
-The design contrast is summarized below. "Project-owned VNet" here means a VNet that the project module itself creates and owns, distinct both from the shared Platform LZ VNet and from a user-supplied enterprise spoke (which is the BYO case).
-
-| Concern                                                     | Platform-layer VNet (current target)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | Hypothetical project-owned VNet (in non-BYO mode)                                                                                                                                                                                                                                                                                                                                                          |
-| ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Bootstrap Storage Account / Key Vault Private Endpoints** | The bootstrap SA (Layer 1 tfstate) and Key Vault are **single, organization-scoped resources** (Table A in §1), used by the **platform admin's own apply path** — `_bootstrap`, `devops/lz`, and `project_github` provisioning — **not** by the project team's runner. Their Private Endpoints are deployed once into the Platform LZ VNet at LZ apply time so the platform admin (running locally, from a jumphost, or from a central pipeline that lives in the Platform LZ VNet) can reach them privately. Co-locating those PEs with the runner subnet is a side-effect of having one shared platform VNet; it is not what makes `platform` mode preferred. | A separate per-project VNet would still need to reach those PEs **from the platform admin's apply context**, which means either (a) duplicating the SA/KV PEs into every project VNet (impossible — SA/KV are org singletons) or (b) peering the platform admin's apply network to every project VNet. Either way, the project VNet design fragments organization-scoped admin networking with no benefit. |
-| **Shared ACR + private DNS zones (`privatelink.*`)**        | The runner image is pulled from the org-shared ACR (Tab. B in §1) and resolved via the org-singleton `privatelink.azurecr.io` zone (plus other `privatelink.*` zones for any project-scoped Layer 2 SA / project KV records published in the same zones). The Platform LZ owns the canonical zones and links them to the LZ VNet once. Records published by the ACR PE — and by per-project SA / KV PEs that also land in `privatelink.blob.core.windows.net` / `privatelink.vaultcore.azure.net` — resolve correctly from any project subnet inside the same VNet without per-project DNS link setup.                                                          | Each project VNet would need either (a) its own copy of the same `privatelink` zones (which causes split-horizon collisions and duplicates A-records), or (b) explicit `privateDnsZoneVirtualNetworkLink` per (zone × project VNet) — i.e. exactly §8.0.1 rule #1, paid by every project for nothing in return.                                                                                            |
-| **NAT egress / firewall allowlists**                        | One NAT Gateway with a **small, stable set of egress public IPs** is shared by all project subnets. SaaS providers, GitHub, registry mirrors, etc. can be allowlisted **once** at the org level.                                                                                                                                                                                                                                                                                                                                                                                                                                                                | N project NAT Gateways → N egress IP sets → O(N) allowlist entries to maintain externally. Cost and operational burden scale linearly with project count, with no functional benefit.                                                                                                                                                                                                                      |
-| **Address-space governance**                                | Subnet slices are carved from a **central /16-class address plan** owned by the platform team; non-overlap (§8.0.1 rule #5) is guaranteed by construction.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Each project module would need its own (overlapping or random) address space, or a separate IPAM. This re-creates the exact problem BYO mode was designed for, but without an enterprise IPAM to solve it.                                                                                                                                                                                                 |
-| **ACA subnet delegation footprint**                         | ACA Environment infrastructure subnet requires a **/23 minimum**. Allocating one /23 per project from a shared platform /16 is efficient and predictable.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Each project-owned VNet would need its own /23 plus padding for additional subnets — multiplying address-space consumption and making future peering harder.                                                                                                                                                                                                                                               |
-| **Cost and lifecycle of VNet objects**                      | One VNet, one NAT, one set of NSGs/UDRs, one DNS-link fan-out (zone → VNet) — created once at LZ provisioning, amortized across all projects.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | N VNets, N NATs, N×K NSG/UDR sets, N×Z DNS zone links. Each project apply pays minutes of provisioning latency for VNet/NAT/peering it does not strategically own.                                                                                                                                                                                                                                         |
-| **Operational ownership**                                   | Network is owned by the **platform team** (matches §1's "Organization" responsibility row). Project teams do not need network expertise to onboard.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Network would silently leak into the **project team's** ownership in the default mode — contradicting the org/project responsibility split that the entire spec is built around (§1, §2, §6).                                                                                                                                                                                                              |
-| **Symmetry with BYO**                                       | Project module always **consumes** subnet IDs (`aca_subnet_id`, `pe_subnet_id`, etc.) regardless of mode. The only thing that differs between `platform` and `byo` is **who supplies those IDs**: the LZ outputs vs. the user input. The project-module contract is identical.                                                                                                                                                                                                                                                                                                                                                                                  | A third "project-creates-its-own-VNet" mode would introduce a third contract shape (project both creates _and_ consumes its own VNet), increasing module surface area and making the `platform`/`byo` switch in §8.2 a three-way decision instead of two.                                                                                                                                                  |
-| **Already-equivalent-to-BYO if you peer**                   | n/a                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | If the project VNet still must reach the platform SA/KV PEs, the project VNet must peer to the platform VNet and link to all platform DNS zones. That is **exactly BYO mode**, just without an enterprise spoke. So this hypothetical mode is dominated by either (`platform`) or (`byo`); it is never the best choice.                                                                                    |
-
-**Two-line summary.** Platform-layer ownership of the VNet in `platform` mode follows directly from the fact that the **Platform LZ already owns the shared ACR, the `privatelink.*` DNS zone singletons, the shared NAT, and the shared address-plan governance** (the bootstrap SA/KV PEs ride along as a side-effect of having one platform VNet, but they serve the platform admin's apply path — not the project runner — see §8.0.1 rule #1). Co-locating runner subnets in that same VNet is the cheapest, simplest, and most correct way to give projects access to those organization-shared resources without re-implementing the seven §8.0.1 consistency rules in every project. When a project _has_ a real reason to live somewhere else (enterprise spoke, central firewall, on-prem peering), it switches to `byo` mode and accepts the cost of re-establishing those rules explicitly. There is no useful third option in between.
-
-#### 8.0.5 Detailed network diagrams (platform mode and BYO mode)
-
-The high-level three-tier diagram in §8.0 intentionally hides per-subnet, DNS-link, peering, and identity binding details so the model stays readable. The diagrams below add those details for the two operational modes so that the runtime network path — from the runner container up to the org-shared ACR and the project's own Layer 2 tfstate Storage Account / project Key Vault, and out to the target subscription's Application VNet — is unambiguous. (The bootstrap SA / Key Vault PEs are shown for completeness but are **not** on the runner data-path: they serve the platform admin's apply context — `_bootstrap`, `devops/lz`, and `project_github` provisioning — see §8.0.1 rule #1.) The diagrams also show which arrows are created by `devops/lz`, which by the project module, and which are out of scope of this LZ (enterprise hub-and-spoke).
-
-##### 8.0.5.1 `network_mode = "platform"` — runner co-located in the shared Platform LZ VNet
-
-In `platform` mode the project's CI/CD compute lands in a **project-dedicated subnet slice** of the shared Platform LZ VNet. The bootstrap SA/KV/ACR Private Endpoints, the `privatelink.*` DNS zones, and the NAT egress are all in the same VNet, so the runner reaches them with **no peering and no per-project DNS link** — the seven §8.0.1 consistency rules are satisfied by construction (§8.0.4).
-
-```text
-Platform LZ subscription                                              Target subscription(s) — one per environment
-┌────────────────────────────────────────────────────────────────┐    ┌───────────────────────────────────────────┐
-│ Platform LZ VNet  10.10.0.0/16   (created by devops/lz)        │    │ Application / Workload VNet (project IaC) │
-│                                                                │    │   10.50.0.0/16  (NOT created by this LZ)  │
-│  ┌──────────────────────────┐  ┌──────────────────────────┐    │    │                                           │
-│  │ pe-bootstrap   10.10.1/24│  │ devbox        10.10.4/24 │    │    │   ┌────────────────────────────────────┐  │
-│  │  PE → Bootstrap SA       │  │  Dev Box NIC pool        │    │    │   │ app-tier   10.50.1.0/24            │  │
-│  │  PE → Bootstrap KV       │  │  (DevBox network conn.)  │    │    │   │  App Service / AKS / Functions /…  │  │
-│  │  PE → ACR (runner image) │  └──────────────────────────┘    │    │   │  + their private endpoints         │  │
-│  └────────┬─────────────────┘                                  │    │   └────────────┬───────────────────────┘  │
-│           │                                                    │    │                │                          │
-│  ┌────────┴───────────────────────────────────────────────┐    │    │   ┌────────────┴───────────────────────┐  │
-│  │ project-A runner subnet  10.10.16.0/23                 │    │    │   │ pe-app  10.50.2.0/27               │  │
-│  │   delegated: Microsoft.App/environments                │    │    │   │  PE → app SQL / KV / Storage …     │  │
-│  │   ┌──────────────────────────────────────────────┐     │    │    │   └────────────────────────────────────┘  │
-│  │   │ ACA Environment  (created by project module) │     │    │    │                                           │
-│  │   │   ACA Job: tf-runner                         │     │    │    └────────────────────┬──────────────────────┘
-│  │   │     image: ACR (private pull, container-     │     │    │                         │
-│  │   │            run UAMI from Platform LZ)        │     │    │                         │ peering provided by
-│  │   │     env-job UAMIs (7 per project): plan/apply│     │    │                         │ enterprise hub-and-
-│  │   └──────────────────────────────────────────────┘     │◄───┼─────────────────────────┘ spoke (NOT this LZ)
-│  └────────────────────────────────────────────────────────┘    │                           § 8.0.2
-│                                                                │
-│  ┌────────────────────────────────────────────────────────┐    │
-│  │ pe-project-A-tfstate  10.10.17.0/27  (project module)  │    │
-│  │   PE → Layer 2 project Storage Account (Tab. C in §1)  │    │
-│  └────────────────────────────────────────────────────────┘    │
-│                                                                │
-│  ┌──────────┐                                                  │
-│  │ NAT GW   │ ← egress (single shared public IP set,           │
-│  │ + PIP    │   allowlisted once at the org level — §8.0.4)    │
-│  └────┬─────┘                                                  │
-│       │ egress to GitHub / Azure DevOps / public registries    │
-└───────┼────────────────────────────────────────────────────────┘
-        ▼
-   Internet (egress only)
-
-Private DNS zones in the Platform LZ subscription (one VNet link each, by devops/lz):
-  privatelink.blob.core.windows.net           ← bootstrap SA (admin path) + project Layer 2 SA records
-  privatelink.vaultcore.azure.net             ← bootstrap KV (admin path) + project KV records
-  privatelink.azurecr.io                      ← ACR records (runner image pull path)
-  privatelink.<region>.azurecontainerapps.io  ← ACA Environment records
-                              │
-                              └── linked once to Platform LZ VNet (covers ALL project subnets)
-                                  → runner resolves ACR + project Layer 2 SA + project KV
-                                    via private IP (bootstrap SA/KV are not on the runner path —
-                                    §8.0.1 rule #1)
-                                  → no per-project DNS link, no peering, no FW change
-```
-
-Key properties of `platform` mode (cross-references in parentheses):
-
-- **Single shared VNet, project-dedicated subnets.** Platform LZ owns the address plan and carves a `/23` ACA subnet + `/27` PE subnet per project (§8.0.4 row "Address-space governance" / "ACA subnet delegation footprint"). The project module never creates the VNet; it only attaches resources to subnets exposed by `devops_network`.
-- **Runner data-path PE reachability is automatic.** ACR (runner image), the project's Layer 2 tfstate Storage Account, and the project's own Key Vault PEs all live in the same VNet as the runner subnet (ACR in the org-shared PE subnet; Layer 2 SA / project KV in a project-dedicated PE subnet), so no peering is needed for the runner to reach them on private IPs (§8.0.4 row "Shared ACR + private DNS zones", §8.0.1 rules #2 and #3).
-- **Bootstrap SA / KV PEs are not on the runner path.** They live in the same VNet only because the platform admin's apply path (`_bootstrap`, `devops/lz`, `project_github` provisioning) needs them. The project team's runner never reads or writes them (§8.0.1 rule #1; §3.2 two-layer state model).
-- **Private DNS resolution is automatic.** Each `privatelink.*` zone is linked **once** to the Platform LZ VNet by `devops/lz`. The runner subnet inherits this link automatically (§8.0.1 rule #1; §8.0.4 row "Shared ACR + private DNS zones").
-- **NAT egress is shared.** A single NAT Gateway with a small set of static PIPs serves every project subnet — SaaS allowlists (GitHub, package registries, Microsoft Entra) need to be maintained **once** at the org level (§8.0.4 row "NAT egress / firewall allowlists").
-- **ACA Environment is project-scoped.** Per §5.4.1, the ACA Environment is created by the project module inside the project's runner subnet. Platform LZ provides only the shared dependencies (ACR, Log Analytics, container-run UAMI).
-- **Connectivity to Application/Workload VNets (target subscription).** The runner reaches resources in the target subscription's Application VNet via the enterprise hub-and-spoke peering — **not created by this LZ** (§8.0.2). In a greenfield setup with no hub-and-spoke, the project team is expected to peer the Platform LZ VNet ↔ each Application VNet directly, or to reach those resources over service endpoints / public endpoints if private-link is not required.
-
-##### 8.0.5.2 `network_mode = "byo"` — runner deployed into a user-supplied enterprise spoke
-
-In `byo` mode the runner subnet lives in a **pre-provisioned enterprise spoke VNet** that the LZ neither creates nor owns. The seven §8.0.1 consistency rules now have to be made explicit: peering between the BYO VNet and the Platform LZ VNet (or transit through the enterprise hub) is required to reach the **org-shared ACR PE** so the runner can pull its container image, and the BYO VNet must be linked to the Platform LZ's `privatelink.*` DNS zones so the corresponding hostnames resolve to the platform PE IPs. The project's **Layer 2 tfstate Storage Account** and the project's **own Key Vault** for project secrets are deployed by the project module **inside the BYO VNet** (in the BYO PE subnet) — they are project-owned, not platform-owned, and therefore do not require platform-VNet peering. The bootstrap SA / Key Vault PEs in the Platform LZ VNet are **not** on the runner data-path (§8.0.1 rule #1).
-
-```text
-Platform LZ subscription (devops/lz, unchanged from platform mode)        Target subscription(s)
-┌────────────────────────────────────────────────────────────────┐         ┌───────────────────────────────────┐
-│ Platform LZ VNet  10.10.0.0/16                                 │         │ Application / Workload VNet       │
-│                                                                │         │   10.50.0.0/16  (project IaC)     │
-│  ┌──────────────────────────┐                                  │         │                                   │
-│  │ pe-bootstrap   10.10.1/24│                                  │         │   App Service / AKS / SQL / …     │
-│  │  PE → Bootstrap SA       │◄────────────┐                    │         │   + their private endpoints       │
-│  │  PE → Bootstrap KV       │             │ private IPs        │         │                                   │
-│  │  PE → ACR (runner image) │             │ resolved via       │         └────────────┬──────────────────────┘
-│  └──────────────────────────┘             │ privatelink.*      │                      │
-│                                           │ DNS zones          │  enterprise hub-and-spoke peering
-│  pe-platform Layer-2 SA records           │                    │  (NOT this LZ — § 8.0.2)
-│  exist in privatelink.blob zone, but      │                    │                      │
-│  the project Layer-2 SA / PE itself is    │                    │                      ▼
-│  in the BYO VNet (see below)              │                    │         (BYO spoke, see right)
-│                                           │                    │
-│  Private DNS zones (privatelink.*)        │                    │
-│   ─ linked to Platform LZ VNet (always)   │                    │
-│   ─ linked to BYO VNet (rule #1, by      ─┤                    │
-│     project module via DNS zone IDs       │                    │
-│     from devops_network output)           │                    │
-└───────────────────────────────────────────┼────────────────────┘
-                                            │
-                                            │  VNet ↔ VNet peering
-                                            │  (enterprise networking team —
-                                            │   rule #2, NOT this LZ)
-                                            │
-                                            ▼
-              ┌────────────────────────────────────────────────────────────────┐
-              │ BYO VNet (enterprise spoke)  10.20.0.0/16                       │
-              │   pre-existing — owned by enterprise networking team            │
-              │   peered to: hub VNet (FW/DNS proxy), Platform LZ VNet,         │
-              │              target Application VNet(s)                         │
-              │                                                                 │
-              │  ┌────────────────────────────────────────────────────────┐     │
-              │  │ aca-runner subnet  10.20.16.0/23   (BYO, user input)   │     │
-              │  │   MUST be delegated Microsoft.App/environments         │     │
-              │  │   (rule #4 — checked by Terraform precondition § 8.4)  │     │
-              │  │   ┌──────────────────────────────────────────────┐     │     │
-              │  │   │ ACA Environment  (created by project module) │     │     │
-              │  │   │   ACA Job: tf-runner                         │     │     │
-              │  │   │     image: ACR pull (via peering+DNS rule #3)│     │     │
-              │  │   │     env-job UAMIs (7 per project): plan/apply│     │     │
-              │  │   └──────────────────────────────────────────────┘     │     │
-              │  └────────────────────────────────────────────────────────┘     │
-              │                                                                 │
-              │  ┌────────────────────────────────────────────────────────┐     │
-              │  │ pe subnet  10.20.17.0/27   (BYO, user input)           │     │
-              │  │   PE → Layer 2 project Storage Account (project tfstate)│    │
-              │  └────────────────────────────────────────────────────────┘     │
-              │                                                                 │
-              │  ┌────────────────────────────────────────────────────────┐     │
-              │  │ devbox subnet  10.20.18.0/26   (optional, BYO)         │     │
-              │  └────────────────────────────────────────────────────────┘     │
-              │                                                                 │
-              │  Egress: enterprise NAT or Azure Firewall in the hub            │
-              │          (no per-project NAT GW; SaaS allowlists managed        │
-              │           centrally — rules #6, also see § 8.0.2)               │
-              └─────────────────────────────────────────────────────────────────┘
-
-Address-space rules (§8.0.1 rule #5): BYO VNet CIDR must NOT overlap with
-  - Platform LZ VNet (10.10.0.0/16 in this example) — required for peering
-  - Application / Workload VNet(s) — required for hub-and-spoke peering
-  Enforced by enterprise IPAM, not by this LZ.
-
-Private DNS resolution path (§8.0.1 rule #1) for the runner in the BYO VNet:
-  runner → DNS query for "<acr-name>.azurecr.io"   (runner image pull, rule #2)
-        → resolves via privatelink.azurecr.io
-        → DNS zone is linked to BYO VNet by project module
-          (azurerm_private_dns_zone_virtual_network_link, one per zone,
-           using devops_network.private_dns_zone_ids from the LZ output)
-        → A-record points to ACR PE IP in Platform LZ VNet
-        → reachable because BYO ↔ Platform LZ peering exists (rule #2)
-
-  runner → DNS query for "<project-sa>.blob.core.windows.net"   (Layer 2 tfstate)
-        → resolves via privatelink.blob.core.windows.net
-        → A-record points to PE IP in the BYO PE subnet (10.20.17.x)
-        → reachable directly within the BYO VNet — project SA / project KV
-          are project-owned (rule #3); no platform peering needed for these.
-
-  Note: bootstrap SA and bootstrap KV are NOT on the runner data-path
-        (they are used only by the platform admin's apply context for
-         _bootstrap / devops/lz / project_github provisioning — §8.0.1 rule #1).
-```
-
-What this LZ owns vs. what the enterprise owns in `byo` mode (mapping back to §8.0.1):
-
-| Concern                                                                                                                                                                                          | Owned by `devops/lz` (Platform LZ)                                                                                                     | Owned by project module (`project_github` / `project_azuredevops`)                                                                                                    | Owned by enterprise networking team (NOT this LZ)                                                           |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| Platform LZ VNet, NAT, ACR Private Endpoint, `privatelink.*` DNS zones (and the bootstrap SA/KV PEs for the platform admin path — _not_ on the runner data-path, §8.0.1 rule #1)                 | ✅ Created and owned (always — same as `platform` mode).                                                                               | —                                                                                                                                                                     | —                                                                                                           |
-| BYO VNet itself (address space, NSGs, UDRs)                                                                                                                                                      | —                                                                                                                                      | —                                                                                                                                                                     | ✅ Pre-provisioned spoke; supplied via `byo_vnet.{vnet_id, aca_subnet_id, pe_subnet_id, devbox_subnet_id}`. |
-| Subnet delegation `Microsoft.App/environments` on the BYO ACA subnet (rule #4)                                                                                                                   | —                                                                                                                                      | ⚠️ **Validated** by Terraform precondition; **enforced** during BYO subnet provisioning by enterprise (the project module fails fast at plan-time if missing).        | ✅ Must be set on the spoke subnet at the time it is provisioned.                                           |
-| Linking BYO VNet to Platform LZ `privatelink.*` zones (rule #1)                                                                                                                                  | Exposes `devops_network.private_dns_zone_ids`.                                                                                         | ✅ Creates `azurerm_private_dns_zone_virtual_network_link` per zone × BYO VNet, using the IDs from the LZ output (when `byo_vnet.link_to_platform_private_dns`).      | —                                                                                                           |
-| BYO VNet ↔ Platform LZ VNet peering (rule #2 — runner reaches the org-shared ACR PE)                                                                                                            | —                                                                                                                                      | —                                                                                                                                                                     | ✅ Done via hub-and-spoke or direct peering; the LZ only validates connectivity at apply time.              |
-| ACA Environment + runner ACA Job + 7 UAMIs (env × job)                                                                                                                                           | Provides shared deps: ACR + container image build (Tab. B in §1), Log Analytics (runner logs), container-run UAMI (`acr_pull` on ACR). | ✅ Creates ACA Environment in the BYO ACA subnet, ACA Job, OIDC federated credentials, conditional subscription RBAC. See §5.4.1.                                     | —                                                                                                           |
-| Layer 2 project tfstate Storage Account + project Key Vault + their PEs in the BYO PE subnet (Tab. C in §1, rule #3 — both project-owned, in the BYO VNet, no platform peering needed for these) | —                                                                                                                                      | ✅ Creates Layer 2 SA (LRS by default, selectable replication) and project KV inside a project-scoped RG in the platform subscription, with PEs in the BYO PE subnet. | —                                                                                                           |
-| Connectivity from runner VNet (BYO) to target subscription Application/Workload VNets                                                                                                            | —                                                                                                                                      | —                                                                                                                                                                     | ✅ Standard hub-and-spoke peering or VPN/ER through the enterprise hub (see §8.0.2).                        |
-
-When peering or DNS links from §8.0.1 are missing, the runner fails with deterministic, observable errors (DNS NXDOMAIN for `privatelink.azurecr.io`, TCP timeout to the ACR PE IP, ACR pull failure on the ACA Job init container, or — for the project-owned PEs — DNS NXDOMAIN / TCP timeouts within the BYO VNet itself if the project SA / KV PE subnet is not correctly configured). The project module surfaces these as Terraform preconditions where possible (rule #4 subnet delegation) and as runtime failures otherwise — there is no silent fallback to public endpoints.
-
----
-
-### 8.1 Problem
-
-Today the Landing Zone always creates a fresh VNet with all required subnets. Enterprise customers often:
-
-- Have a **hub-and-spoke** topology managed by a central networking team.
-- Need DevOps resources to land in a **pre-provisioned spoke VNet** with corporate firewall rules, DNS forwarding, and peering already configured.
-- Cannot use arbitrary address spaces.
-
-### 8.2 Design
-
-Add a `network_mode` variable that selects between two intentional, complementary modes (rationale in §8.0.3):
-
-| Mode       | Description                                                                                                                                          | Who creates VNet?          | Who provides subnet IDs?        |
-| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- | ------------------------------- |
-| `platform` | **Default low-friction onboarding mode.** The LZ creates and manages a shared platform VNet; each project consumes a project-dedicated subnet slice. | `devops/lz` module         | `devops/lz` outputs             |
-| `byo`      | **Enterprise integration mode.** The user supplies an existing spoke VNet and subnet IDs; the project module satisfies the §8.0.1 consistency rules. | External (networking team) | User input at **project level** |
-
-### 8.3 Landing Zone changes (`devops/lz`)
-
-The LZ continues to create its platform VNet when `enable_private_network = true`; BYO is a **project-level** decision and does not require the LZ to delegate VNet creation. However, supporting BYO end-to-end does require the LZ output changes described in **§5.4.1** (remove `container_app_environment_id`, keep `aca_subnet_id` on `devops_network`), because the project-level ACA Environment refactor is a prerequisite for runner compute to land in the BYO VNet. In addition, the LZ already exports its private DNS zone IDs so BYO projects can link their VNet to the same DNS zones (see §8.0.1 rule #1):
-
-```hcl
-# Already partially present in _outputs.tf:
-output "devops_network" {
-  value = {
-    ...
-    private_dns_zone_ids = { for index, z in azurerm_private_dns_zone.this : index => z.id }
-    ...
-  }
-}
-```
-
-### 8.4 Project-level changes (`devops/project_github`)
-
-```hcl
-# New file: _variables.network.tf
-
-variable "network_mode" {
-  description = "Network mode for the project: 'platform' (use LZ-managed VNet) or 'byo' (Bring Your Own VNet)"
-  type        = string
-  default     = "platform"
-
-  validation {
-    condition     = contains(["platform", "byo"], var.network_mode)
-    error_message = "network_mode must be 'platform' or 'byo'."
-  }
-}
-
-variable "byo_vnet" {
-  description = "BYO VNet configuration. Required when network_mode = 'byo'."
-  type = object({
-    vnet_id                          = string
-    vnet_resource_group_name         = string
-    private_endpoint_subnet_id       = optional(string)
-    container_app_subnet_id          = optional(string)
-    container_instance_subnet_id     = optional(string)
-    devbox_subnet_id                 = optional(string)
-    link_to_platform_private_dns     = optional(bool, true)
-  })
-  default = null
-
-  validation {
-    condition = (
-      var.network_mode == "platform" ? var.byo_vnet == null :
-      var.byo_vnet != null
-    )
-    error_message = "byo_vnet must be provided when network_mode is 'byo' and must be null when network_mode is 'platform'."
-  }
-}
-```
-
-#### BYO VNet subnet prerequisite validations
-
-When `network_mode = "byo"`, the project module validates that:
-
-1. If `use_self_hosted_runners = true` and `self_hosted_runners_type = "aca"`, then `byo_vnet.container_app_subnet_id` must be provided, and the subnet must have the `Microsoft.App/environments` delegation.
-2. If `use_self_hosted_runners = true` and `self_hosted_runners_type = "aci"`, then `byo_vnet.container_instance_subnet_id` must be provided, and the subnet must have the `Microsoft.ContainerInstance/containerGroups` delegation.
-3. If `use_devbox = true`, then `byo_vnet.devbox_subnet_id` must be provided.
-
-These checks should be implemented as **enforceable Terraform validations/preconditions** (not documentation-only rules), by reading the BYO subnet configuration and asserting required delegations:
-
-```hcl
-data "azurerm_subnet" "byo_aca" {
-  count = var.network_mode == "byo" && var.use_self_hosted_runners && var.self_hosted_runners_type == "aca" ? 1 : 0
-  id    = var.byo_vnet.container_app_subnet_id
-}
-
-resource "terraform_data" "validate_byo_subnets" {
-  lifecycle {
-    precondition {
-      condition = (
-        var.network_mode != "byo" ||
-        !var.use_self_hosted_runners ||
-        var.self_hosted_runners_type != "aca" ||
-        contains(
-          flatten([for d in data.azurerm_subnet.byo_aca[0].delegation : [for s in d.service_delegation : s.name]]),
-          "Microsoft.App/environments"
-        )
-      )
-      error_message = "BYO ACA subnet must include Microsoft.App/environments delegation."
-    }
-  }
-}
-```
-
-Apply the same pattern for ACI (`Microsoft.ContainerInstance/containerGroups`) and DevBox subnet presence checks.
-
-```hcl
-# New file: network.tf (in project_github)
-
-locals {
-  # Resolve subnet IDs based on network mode
-  effective_private_endpoint_subnet_id = (
-    var.network_mode == "byo"
-    ? var.byo_vnet.private_endpoint_subnet_id
-    # Note: private_endpoint_subnet_id is a new field added to the LZ devops_network output
-    : try(local._devops_outputs.devops_network.private_endpoint_subnet_id, null)
-  )
-
-  effective_aca_subnet_id = (
-    var.network_mode == "byo"
-    ? var.byo_vnet.container_app_subnet_id
-    : local.container_app_environment_id != null ? local._devops_outputs.devops_network.aca_subnet_id : null
-  )
-
-  effective_aci_subnet_id = (
-    var.network_mode == "byo"
-    ? var.byo_vnet.container_instance_subnet_id
-    : local.container_instance_subnet_id
-  )
-
-  effective_devbox_subnet_id = (
-    var.network_mode == "byo"
-    ? var.byo_vnet.devbox_subnet_id
-    : local._devops_outputs.devops_devbox.devbox_subnet_id
-  )
-}
-
-# Optionally link BYO VNet to platform private DNS zones
-resource "azurerm_private_dns_zone_virtual_network_link" "byo" {
-  for_each = (
-    var.network_mode == "byo" && var.byo_vnet.link_to_platform_private_dns
-    ? local._devops_outputs.devops_network.private_dns_zone_ids
-    : {}
-  )
-
-  name                  = "link-${var.project_name}-${each.key}"
-  resource_group_name   = local._devops_outputs.devops_network.resource_group_name
-  private_dns_zone_name = each.key
-  virtual_network_id    = var.byo_vnet.vnet_id
-  registration_enabled  = false
-}
-```
-
-### 8.5 Sample `terraform.tfvars` — BYO VNet project
-
-```hcl
-# terraform.tfvars — Project "contoso-payments" with BYO VNet
-
-target_subscription_id = "00000000-0000-0000-0000-000000000000"
-project_name           = "contoso-payments"
-location               = "japaneast"
-
-tags = {
-  appTag     = "contoso-payments"
-  envTag     = "prod"
-  projectTag = "devops"
-  purposeTag = "alz"
-}
-
-repositories = [
-  {
-    name    = "contoso-payments-infra"
-    profile = "infra"
-  },
-  {
-    name    = "contoso-payments-svc"
-    profile = "app"
-  },
-]
-
-subscriptions = {
-  "development" = { id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" },
-  "production"  = { id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb" },
-}
-
-# Bring Your Own VNet
-network_mode = "byo"
-byo_vnet = {
-  vnet_id                      = "/subscriptions/.../resourceGroups/rg-network/providers/Microsoft.Network/virtualNetworks/vnet-spoke-payments"
-  vnet_resource_group_name     = "rg-network"
-  private_endpoint_subnet_id   = "/subscriptions/.../subnets/snet-pe"
-  container_app_subnet_id      = "/subscriptions/.../subnets/snet-aca"
-  link_to_platform_private_dns = true
-}
-
-use_self_hosted_runners  = true
-self_hosted_runners_type = "aca"
-use_devbox               = false
-```
-
-### 8.6 Architecture Diagram — BYO VNet Flow
-
-```text
-┌─────────────────────────────────────────────────────────────────┐
-│ Azure — Enterprise Hub-Spoke Network                            │
-│                                                                 │
-│  ┌─────────────┐      peering      ┌─────────────────────────┐ │
-│  │  Hub VNet    │◄────────────────► │  Spoke VNet             │ │
-│  │  (Firewall,  │                   │  (BYO — contoso-pays)   │ │
-│  │   DNS, VPN)  │                   │  ┌──────────────────┐   │ │
-│  └─────────────┘                    │  │ snet-pe          │   │ │
-│                                     │  │ snet-aca         │   │ │
-│       peering                       │  │ snet-aci         │   │ │
-│  ┌─────────────┐                    │  └──────────────────┘   │ │
-│  │  Platform LZ │                   └─────────────────────────┘ │
-│  │  VNet        │                                               │
-│  │  (managed by │      DNS zone links                           │
-│  │   devops/lz) │◄──────────────── (linked at project level)    │
-│  └─────────────┘                                                │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### 8.7 Repo-level BYO VNet — analysis
-
-**Question:** Could different repositories within the same project use different BYO VNets?
-
-**Answer:** Repo-level BYO VNet is **not practical** in the current architecture. The network mode should remain a **project-level** decision.
-
-| Concern                                     | Why repo-level BYO VNet is impractical                                                                                                                                                                    |
-| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Runner infrastructure is project-scoped** | Self-hosted runners (ACA jobs, ACI containers) are created per project and shared across all repos in the project. A runner cannot exist in two different VNets simultaneously.                           |
-| **Private endpoints are shared**            | The private endpoint to the tfstate Storage Account is project-scoped. It lives in one subnet and is used by all repos' workflows.                                                                        |
-| **State management**                        | All repos in a project share the same Terraform backend (storage account + container). Splitting VNets per repo would require separate state backends, which defeats the purpose of the project grouping. |
-| **Complexity vs. value**                    | Per-repo VNets would require a `for_each` over repos with different network configs, separate ACA environments per repo, and per-repo DNS zone links — significant complexity for a rare use case.        |
-
-**If repos truly need different networks, they likely belong in different projects.** The project boundary is the right level for network isolation. A team that needs repo A in VNet X and repo B in VNet Y should define two separate projects, each with its own `network_mode` and `byo_vnet` configuration.
-
-> **Note:** This does not limit where the _application_ deploys — application-level networking (where the app runs) is handled by the application's own Terraform/IaC, not by the DevOps Landing Zone. The BYO VNet here governs only the _CI/CD infrastructure_ (runners, private endpoints, DevBox).
-
----
-
-## 9. Organization-Level Governance (GitHub & Azure DevOps)
-
-> **Note:** This entire section describes **proposed governance features**. No governance resources (rulesets, runner groups, agent pools, repository defaults) are currently created by `devops/lz`. The current LZ only stores GitHub PATs and Azure DevOps PATs in the bootstrap Key Vault as secrets. Branch protection rules are created at the project level by the `github_workflows` module.
-
-### 9.1 Current gaps
-
-- Branch protection rules are only defined at the project level inside `github_workflows`.
-- Runner groups are created per project only if `use_runner_group = true`.
-- No org-level repository settings baseline.
-- **No Azure DevOps governance is managed at all** — ADO policies/pools are configured manually.
-
-### 9.2 Target: Platform-agnostic governance variables
-
-The LZ defines governance settings that are **platform-agnostic** and then mapped to both GitHub and Azure DevOps:
-
-```hcl
-# devops/lz/_variables.governance.tf
-
-variable "org_default_branch_rules" {
-  description = "Default branch protection rules applied to all project repositories (GitHub + Azure DevOps)"
-  type = object({
-    require_pull_request   = optional(bool, true)
-    required_review_count  = optional(number, 1)
-    require_status_checks  = optional(bool, true)
-    dismiss_stale_reviews  = optional(bool, true)
-    require_code_owners    = optional(bool, false)
-  })
-  default = {}
-}
-
-variable "org_repository_defaults" {
-  description = "Default settings for all repositories in the organization"
-  type = object({
-    default_visibility            = optional(string, "private")
-    delete_branch_on_merge        = optional(bool, true)
-    allow_squash_merge            = optional(bool, true)
-    allow_merge_commit            = optional(bool, true)
-    allow_rebase_merge            = optional(bool, false)
-    vulnerability_alerts_enabled  = optional(bool, true)
-  })
-  default = {}
-}
-```
-
-### 9.3 GitHub governance implementation
-
-```hcl
-# devops/lz/governance.github.tf
-
-resource "github_organization_ruleset" "baseline" {
-  count       = var.enable_github ? 1 : 0
-  name        = "org-baseline"
-  target      = "branch"
-  enforcement = "active"
-
-  conditions {
-    ref_name {
-      include = ["~DEFAULT_BRANCH"]
-      exclude = []
-    }
-  }
-
-  rules {
-    deletion         = true
-    non_fast_forward = true
-
-    pull_request {
-      dismiss_stale_reviews_on_push     = var.org_default_branch_rules.dismiss_stale_reviews
-      require_code_owner_review         = var.org_default_branch_rules.require_code_owners
-      required_approving_review_count   = var.org_default_branch_rules.required_review_count
-      required_review_thread_resolution = true
-    }
-  }
-
-  bypass_actors {
-    actor_id    = 0   # Organization admin
-    actor_type  = "OrganizationAdmin"
-    bypass_mode = "pull_request"  # admins must use PRs but can bypass in emergencies
-  }
-}
-
-variable "org_runner_groups" {
-  description = "Runner groups to create at the GitHub organization level"
-  type = map(object({
-    visibility          = optional(string, "selected")
-    allows_public_repos = optional(bool, false)
-  }))
-  default = {}
-}
-
-resource "github_actions_runner_group" "org" {
-  for_each                   = var.enable_github ? var.org_runner_groups : {}
-  name                       = each.key
-  visibility                 = each.value.visibility
-  allows_public_repositories = each.value.allows_public_repos
-}
-```
-
-### 9.4 Azure DevOps governance implementation
-
-Azure DevOps governance maps to different resource types, but addresses the same policy intent:
-
-```hcl
-# devops/lz/governance.azuredevops.tf
-
-# Org-level agent pools (equivalent to GitHub runner groups)
-variable "org_agent_pools" {
-  description = "Agent pools to create at the Azure DevOps organization level"
-  type = map(object({
-    auto_provision = optional(bool, false)
-    auto_update    = optional(bool, true)
-  }))
-  default = {}
-}
-
-resource "azuredevops_agent_pool" "org" {
-  for_each       = var.enable_azuredevops ? var.org_agent_pools : {}
-  name           = each.key
-  auto_provision = each.value.auto_provision
-  auto_update    = each.value.auto_update
-}
-
-# Note: Azure DevOps branch policies are project-scoped, not org-scoped.
-# The org_default_branch_rules are applied at the PROJECT level during
-# project_azuredevops module execution, where they map to:
-#   - azuredevops_branch_policy_min_reviewers
-#   - azuredevops_branch_policy_build_validation
-#   - azuredevops_branch_policy_auto_reviewers (for CODEOWNERS equivalent)
-```
-
-### 9.5 Governance parity matrix
-
-| Governance Intent                  | GitHub (Org-level)                         | Azure DevOps (Org-level)       | Azure DevOps (Project-level)                 |
-| ---------------------------------- | ------------------------------------------ | ------------------------------ | -------------------------------------------- |
-| **Require PRs for default branch** | `github_organization_ruleset`              | N/A                            | `azuredevops_branch_policy_min_reviewers`    |
-| **Min review count**               | Ruleset: `required_approving_review_count` | N/A                            | Branch policy: `minimum_reviewer_count`      |
-| **Dismiss stale reviews**          | Ruleset: `dismiss_stale_reviews_on_push`   | N/A                            | (Not directly supported)                     |
-| **Require status checks**          | Ruleset: `required_status_checks`          | N/A                            | `azuredevops_branch_policy_build_validation` |
-| **Agent/Runner pools**             | `github_actions_runner_group` (org)        | `azuredevops_agent_pool` (org) | `azuredevops_agent_queue` (project)          |
-| **Repository defaults**            | Org-level settings via API                 | N/A                            | Project-level settings                       |
-
-> **Key architectural difference:** GitHub allows org-level rulesets that cascade to all repos. Azure DevOps does not have org-level branch policies — they must be applied per-project. The DevOps LZ handles this by applying the `org_default_branch_rules` at project creation time in the `project_azuredevops` module.
-
----
-
-## 10. GitOps-Driven Project & Repository Onboarding
-
-> **Note:** This section describes the GitOps onboarding workflow for the target architecture.
-
-### 10.1 Problem
-
-Today, onboarding a new project requires:
-
-1. Copy `terraform.tfvars.sample` → `terraform.tfvars`
-2. Fill in all values manually
-3. Run `terraform init` + `terraform apply`
-
-For organizations with many projects (10+), this is error-prone and hard to audit. There is no self-service mechanism and no approval workflow.
-
-### 10.2 Target: Issue-driven GitOps workflow
-
-Inspired by [github-gitops-samples](https://github.com/shigeyf/github-gitops-samples), the onboarding model uses a **GitOps governance repository** with an issue → PR → merge → provision pipeline:
-
-**Workflow steps (text description):**
-
-1. User creates an Issue using the project/repository request template.
-2. A GitHub Actions workflow parses the issue and generates a YAML project definition file.
-3. The workflow creates a Pull Request containing the YAML file.
-4. CODEOWNERS-designated approvers review and approve the PR (this is the approval gate).
-5. The PR is merged to the main branch.
-6. A provisioning workflow detects the new YAML file and runs `terraform plan` + `terraform apply`.
-7. The project and its repositories are provisioned.
-
-```mermaid
-flowchart LR
-    A[User creates Issue] --> B[Issue Template:<br/>Project/Repo Request]
-    B --> C[Workflow:<br/>Issue to PR]
-    C --> D[YAML definition<br/>generated in PR]
-    D --> E[CODEOWNERS<br/>review & approve]
-    E --> F[PR merged]
-    F --> G[Workflow:<br/>terraform apply]
-    G --> H[Project + repos<br/>provisioned]
-```
-
-### 10.3 GitOps governance repository structure
-
-The GitOps governance repo is **set up independently** (not created by Terraform) as a **template repository** that organizations clone. It is hosted in the **GitOps governance organization** in GitHub Enterprise alongside the platform LZ repo. Creating GitHub repos via Terraform is complex and fragile — the template repo approach is simpler and more reliable.
-
-The governance repo holds project definitions, the workflows that provision them, **and the IaC modules** (`project_github`, `project_azuredevops`, shared modules) that the workflows execute. This makes the GitOps repo **self-contained** — it does not need to clone the DevOps Landing Zone repo at provisioning time.
-
-```text
-# GitHub Enterprise organization layout:
-<governance-org>/
-├── devops-landing-zone/           # Platform LZ IaC repo (Tier 0 + Tier 1)
-└── devops-gitops/                 # GitOps governance repo (project IaC, template repo)
-```
-
-```text
-<org>/devops-gitops/                    # GitOps governance repository
-├── .github/
-│   ├── CODEOWNERS                      # Approval teams per project area
-│   │   # Example:
-│   │   # /.github/ @org/gitops-admins
-│   │   # /projects/team-a/ @org/team-a-leads
-│   │   # /projects/team-b/ @org/team-b-leads
-│   │
-│   ├── ISSUE_TEMPLATE/
-│   │   ├── config.yml
-│   │   └── project-request.yaml        # Issue template for new project requests
-│   │
-│   └── workflows/
-│       ├── project-request-to-pr.yaml  # Parses issue → generates YAML → creates PR
-│       └── project-create.yaml         # On PR merge → terraform init/apply
-│
-├── projects/                           # Project definitions (source of truth)
-│   ├── contoso-ecommerce.yaml
-│   ├── contoso-payments.yaml
-│   └── contoso-analytics.yaml
-│
-├── infra/                              # IaC for project provisioning
-│   ├── project_github/                 # Terraform root module: GitHub projects
-│   │   ├── _variables.tf
-│   │   ├── _variables.repositories.tf
-│   │   ├── _variables.network.tf
-│   │   ├── github.tf
-│   │   ├── github.workflow.tf
-│   │   ├── uami.tf
-│   │   ├── uami.federation.tf
-│   │   ├── network.tf
-│   │   └── ...
-│   │
-│   ├── project_azuredevops/            # Terraform root module: Azure DevOps projects
-│   │   ├── _variables.tf
-│   │   ├── _variables.repositories.tf
-│   │   └── ...
-│   │
-│   └── modules/                        # Shared Terraform modules
-│       ├── github/                     # GitHub repo/team/environment resources
-│       ├── azure_devops/               # ADO project/repo/pipeline resources
-│       ├── github_workflows/           # Workflow file generation
-│       └── ...
-│
-└── README.md
-```
-
-> **Keeping IaC in sync with DevOps Landing Zone:**
-> The `infra/` directory contains the same `project_github`, `project_azuredevops`, and shared modules from the DevOps Landing Zone repo. Organizations should keep them in sync via one of:
->
-> - **Git submodule**: `git submodule add <DevOps-Landing-Zone-repo> infra` — the GitOps repo references a pinned commit of the upstream.
-> - **Terraform module registry**: Publish modules to a private Terraform registry and reference them by version in the root modules.
-> - **Direct copy with version tracking**: Copy the modules and track the upstream version in a `VERSION` file.
->
-> The **recommended** approach is Git submodule or Terraform module registry for traceability and reproducibility.
-
-### 10.4 Project definition format (YAML)
-
-Each project is defined by a YAML file in the `projects/` directory. This file serves as the **declarative source of truth** for the project's configuration:
-
-```yaml
-# projects/contoso-ecommerce.yaml
-project_name: contoso-ecommerce
-location: japaneast
-vcs_platform: github # "github" or "azuredevops"
-network_mode: platform
-
-tags:
-  appTag: contoso-ecommerce
-  envTag: prod
-
-repositories:
-  - name: contoso-ecommerce-infra
-    profile: infra
-    description: 'Azure infrastructure for Contoso e-commerce'
-  - name: contoso-ecommerce-api
-    profile: app
-    description: 'Backend API services'
-  - name: contoso-ecommerce-web
-    profile: app
-    description: 'Frontend web application'
-    environments: [development, staging, production]
-
-subscriptions:
-  features:
-    id: '11111111-1111-1111-1111-111111111111'
-  development:
-    id: '22222222-2222-2222-2222-222222222222'
-  staging:
-    id: '33333333-3333-3333-3333-333333333333'
-  production:
-    id: '44444444-4444-4444-4444-444444444444'
-
-runners:
-  use_self_hosted_runners: true
-  self_hosted_runners_type: aca
-```
-
-### 10.5 Issue template for project requests
-
-```yaml
-# .github/ISSUE_TEMPLATE/project-request.yaml
-name: Project Creation Request
-description: Request the creation of a new DevOps Landing Zone project.
-title: '[New Project]: '
-labels: ['gitops-project-request']
-body:
-  - type: input
-    id: project-name
-    attributes:
-      label: Project Name
-      placeholder: contoso-ecommerce
-    validations:
-      required: true
-
-  - type: dropdown
-    id: vcs-platform
-    attributes:
-      label: VCS Platform
-      options:
-        - github
-        - azuredevops
-    validations:
-      required: true
-
-  - type: dropdown
-    id: network-mode
-    attributes:
-      label: Network Mode
-      options:
-        - platform
-        - byo
-    validations:
-      required: true
-
-  - type: textarea
-    id: repositories
-    attributes:
-      label: Repositories
-      description: 'One per line: name:profile:description'
-      placeholder: |
-        contoso-ecommerce-infra:infra:Azure infrastructure
-        contoso-ecommerce-api:app:Backend API services
-    validations:
-      required: true
-
-  - type: textarea
-    id: subscriptions
-    attributes:
-      label: Azure Subscriptions
-      description: 'One per line: environment:subscription-id'
-      placeholder: |
-        development:22222222-2222-2222-2222-222222222222
-        production:44444444-4444-4444-4444-444444444444
-    validations:
-      required: true
-```
-
-### 10.6 Provisioning workflow
-
-On PR merge, the `project-create.yaml` workflow:
-
-1. Detects new/changed YAML files in `projects/`.
-2. For each new or changed project definition:
-   a. Converts the YAML to Terraform `tfvars` format.
-   b. Runs `terraform init` with the appropriate backend config (state key: `projects/<project_name>.terraform.tfstate`).
-   c. Runs `terraform plan` and stores plan output in workflow logs/artifacts for audit.
-   d. Runs `terraform apply` using the self-hosted runner in the platform VNet (for private network access to the tfstate storage).
-
-> **Validation note:** Because this workflow runs on `push` to `main`, PR comments are not available in this job context. If plan feedback must be posted on PRs, add a separate `pull_request` validation workflow that runs `plan` before merge.
-
-```yaml
-# .github/workflows/project-create.yaml (simplified)
-name: Provision DevOps Projects
-on:
-  push:
-    branches: [main]
-    paths: ['projects/**']
-
-jobs:
-  detect-changes:
-    runs-on: ubuntu-latest
-    outputs:
-      files: ${{ steps.changed.outputs.files }}
-    steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
-      - id: changed
-        run: |
-          FILES=$(git diff --name-status ${{ github.event.before }} ${{ github.sha }} \
-            | awk '$1~/[AM]/ && $2 ~ /^projects\/.*\.yaml$/ {print $2}' \
-            | jq -R -s -c 'split("\n") | map(select(length > 0))')
-          echo "files=$FILES" >> "$GITHUB_OUTPUT"
-
-  provision:
-    needs: detect-changes
-    if: needs.detect-changes.outputs.files != '[]'
-    runs-on: [self-hosted, devops-lz] # runs on platform runner
-    strategy:
-      fail-fast: false
-      matrix:
-        file: ${{ fromJson(needs.detect-changes.outputs.files) }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Convert YAML to tfvars and apply
-        run: |
-          PROJECT_NAME=$(yq '.project_name' ${{ matrix.file }})
-          VCS_PLATFORM=$(yq '.vcs_platform' ${{ matrix.file }})
-          # ... convert YAML to terraform.tfvars and write to tfvars file
-          # The IaC modules live inside this repo under infra/
-          cd infra/project_${VCS_PLATFORM}
-          terraform init -backend-config="key=projects/${PROJECT_NAME}.terraform.tfstate"
-          terraform plan -out=tfplan
-          # Note: The PR review/approval (CODEOWNERS) serves as the approval gate.
-          # Auto-approve is safe here because the plan was already reviewed via PR.
-          terraform apply tfplan
-```
-
-### 10.7 Adding repositories to an existing project
-
-To add a new repository to an existing project, a user:
-
-1. Creates an issue using a "Repository Addition Request" template (or directly edits the YAML).
-2. The workflow generates a PR that adds the new repo entry to the project's YAML file.
-3. CODEOWNERS review and approve.
-4. On merge, `terraform apply` runs incrementally — it creates only the new repo and its associated resources.
-
-This is **incremental** — Terraform's `for_each` over `repositories` ensures only new repos are provisioned while existing ones remain untouched.
-
-### 10.8 Relationship to existing manual workflow
-
-The GitOps onboarding is **additive and optional**. The current manual workflow (`terraform.tfvars` + `terraform apply`) continues to work. Organizations can choose:
-
-| Approach                        | When to use                                                 |
-| ------------------------------- | ----------------------------------------------------------- |
-| **Manual** (`terraform.tfvars`) | Small teams, initial setup, one-off projects                |
-| **GitOps** (issue → PR → apply) | Enterprise, many projects, audit trail needed, self-service |
-
-> **Note:** The project YAML definitions in the GitOps repo are the **source of truth** when GitOps is used. They are the equivalent of `terraform.tfvars` but with a review/approval workflow built in.
-
----
-
-## 11. Naming, State & Collision Resistance
-
-### 11.1 Current naming
-
-Resources use a random 4-character suffix (`rand_id`) to avoid collisions. The naming pattern is:
-
-```
-<resource_type>-<project_name>-devops-<region_short>-<rand_id>
-```
-
-### 11.2 Improvements
-
-1. **Portfolio-safe naming**: Add a configurable `org_prefix` (from LZ `naming_suffix`) to all resource names so that multiple DevOps Landing Zones in the same tenant don't collide:
-
-   ```
-   <resource_type>-<org_prefix>-<project_name>-<region_short>-<rand_id>
-   ```
-
-2. **Tfstate key convention**: Standardize the backend key format:
-
-   ```
-   projects/<project_name>.terraform.tfstate
-   ```
-
-   This keeps project states organized under a known prefix in the blob container.
-
-3. **Repository naming convention**: Default repository names follow `<project_name>-<repo_role>`:
-
-   ```
-   contoso-ecommerce-infra
-   contoso-ecommerce-api
-   contoso-ecommerce-templates
-   ```
-
-   Users can override names in the `repositories` variable.
-
-4. **State key stability guardrail**: Use an immutable `project_id` (slug/UUID-like token) for backend keys, and keep `project_name` human-readable/display-only:
-
-   ```text
-   projects/<project_id>.terraform.tfstate
-   ```
-
-   - `project_id` is set once at project creation and must not change.
-   - If display name changes, no backend key change is required.
-   - If a legacy project must change backend key format, perform explicit `terraform init -migrate-state` as a controlled operation.
-
-### 11.3 UAMI naming convention
-
-Per-repo UAMI names use a **mixed** approach that balances readability and Azure naming limits (128 chars max):
-
-```
-uami-<project>-<repo>-<hash>
-```
-
-| Segment     | Source                                               | Purpose                                                                    |
-| ----------- | ---------------------------------------------------- | -------------------------------------------------------------------------- |
-| `uami-`     | Fixed prefix                                         | Resource type identifier                                                   |
-| `<project>` | `var.project_name`                                   | Human-readable project identification                                      |
-| `<repo>`    | Repository name from `repositories` list             | Human-readable repo identification                                         |
-| `<hash>`    | `substr(sha256("<env>-<job_type>-<rand_id>"), 0, 8)` | Collision-resistant suffix encoding environment, job type, and random seed |
-
-**Key design decisions:**
-
-- **Project and repo are human-readable**: When browsing UAMIs in the Azure portal or CLI, operators can immediately identify which project and repository a UAMI belongs to.
-- **Env and job type are hashed**: The environment (dev/staging/prod) and job type (plan/apply) don't need to be visible in the name — they are encoded in the hash. Operators can look up the mapping via Terraform state or resource tags.
-- **Hash provides collision resistance**: The 8-character hex hash (from SHA-256) gives ~4 billion combinations per project-repo pair, which is more than sufficient.
-- **Tags carry full metadata**: Each UAMI should be tagged with `environment`, `job_type`, `project`, and `repo` for full traceability independent of the name.
-
-**Example names:**
-
-```
-uami-contoso-ecom-infra-a3f7b2c1        # project=contoso-ecom, repo=infra, env=prod/apply
-uami-contoso-ecom-infra-e9d4c8f0        # project=contoso-ecom, repo=infra, env=dev/plan
-uami-contoso-ecom-api-7b2e1a9d          # project=contoso-ecom, repo=api, env=prod/apply
-```
-
-**When `shared_identities = true`** (backward-compatible mode), the `<repo>` segment is omitted:
-
-```
-uami-<project>-<hash>
-```
-
-**Terraform implementation sketch:**
-
-```hcl
-locals {
-  uami_names = {
-    for key in local.identity_keys : key => (
-      var.shared_identities
-      ? "uami-${var.project_name}-${substr(sha256("${key}-${local.rand_id}"), 0, 8)}"
-      : "uami-${var.project_name}-${local.repo_name_by_key[key]}-${substr(sha256("${key}-${local.rand_id}"), 0, 8)}"
-    )
-  }
-}
-```
-
----
-
-## 12. Migration Path from Current Design
+## 5. Migration Path from Current Design
 
 ### 12.1 Backward compatibility guarantees
 
@@ -2375,20 +671,20 @@ locals {
 
 ---
 
-## 13. Decision Log (Resolved Questions)
+## 6. Decision Log (Resolved Questions)
 
 | #   | Question                                                                                                                    | Options                                                             | Recommendation                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | --- | --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1   | Should the GitOps governance repo be created as part of the Platform LZ (Tier 1), or set up independently?                  | Part of LZ / Independent / Template repo                            | **✅ Decided:** Set up independently as a **template repository**. Creating a GitHub repo via Terraform is complex and fragile. The GitOps governance organization in GitHub Enterprise hosts both the **platform LZ repo** (LZ IaC) and the **GitOps governance repo** (project IaC). The governance repo must include `project_github`/`project_azuredevops` IaC modules (via git submodule or registry reference) so it is self-contained. |
-| 2   | Should BYO VNet be supported at the **LZ level** (the LZ itself uses an external VNet) or only at the **project level**?    | LZ-level BYO / Project-level BYO / Both                             | **✅ Decided:** Start with **project-level BYO VNet**. LZ-level BYO is a larger change and can be added later. Repo-level BYO VNet (different VNets per repo within a project) is **not practical** — see Section 8.7 for analysis.                                                                                                                                                                                                           |
-| 3   | How should per-repo identities be named to stay within Azure naming limits?                                                 | `uami-<project>-<repo>-<env>-<job>-<rand>` / Hash-based short names | **✅ Decided:** Mixed approach — `uami-<project>-<repo>-<hash>`. Project and repo names remain human-readable for identification; `<hash>` is a short hash derived from env + job type + random seed. No need for env/job to appear in the name — they are encoded in the hash for collision resistance while keeping the name within Azure's 128-char limit. See Section 11.3 for details.                                                   |
-| 4   | Should repository profiles be extensible by users or fixed?                                                                 | Fixed set / User-defined profiles via HCL                           | **✅ Decided:** Start with a **fixed set** (`infra`, `app`, `library`, `docs`); allow user-defined extension later. The fixed set covers the vast majority of use cases. See Section 6.1 for profile definitions and design philosophy.                                                                                                                                                                                                       |
-| 5   | Should the org-level ruleset be enforced or advisory?                                                                       | `active` / `evaluate` (audit-only)                                  | **✅ Decided:** Default to **`active`** (enforced) with bypass for org admins. Advisory mode (`evaluate`) can be used during rollout but the default should enforce branch protection. See Section 9.3 (`enforcement = "active"`, bypass for `OrganizationAdmin`).                                                                                                                                                                            |
-| 6   | Should BYO VNet projects share the platform ACA Environment or create their own?                                            | Shared / Per-project / Configurable                                 | **✅ Decided:** **Per-project ACA Environment** in the BYO VNet. Sharing the platform ACA Environment is not possible when the project uses a different VNet — ACA Environment requires subnet delegation in the project's VNet. See Section 8.4 for network resolution logic.                                                                                                                                                                |
-| 7   | How to handle projects that need only a subset of environments (e.g., just dev + prod)?                                     | Allow `subscriptions` to be a subset / Require all 4                | **✅ Decided:** **Allow subset** — only create environments for the subscriptions provided. The module creates GitHub Actions Environments, UAMIs, and federated identity credentials only for the environments present in `subscriptions`. See Section 6.7 for a sample `terraform.tfvars` with dev + prod only.                                                                                                                             |
-| 8   | For Azure DevOps, should the DevOps LZ always create a new ADO Project, or support referencing an existing one?             | Always create / Reference existing / Both                           | **✅ Decided:** **Both** — the `create_project` variable already exists in the `azure_devops` module. When `create_project = false`, the module references an existing ADO project by name. See Section 7.3 for the variable definition.                                                                                                                                                                                                      |
-| 9   | Should the GitOps provisioning workflow use GitHub-hosted runners or self-hosted runners?                                   | GitHub-hosted / Self-hosted / Configurable                          | **✅ Decided:** **Self-hosted runners** (required for private network access to tfstate storage and Azure resources behind private endpoints). The provisioning workflow uses `runs-on: [self-hosted, devops-lz]`. See Section 10.6 for the workflow definition.                                                                                                                                                                              |
-| 10  | How should Azure DevOps branch policies (project-scoped) be kept in sync with GitHub org-level rulesets when both are used? | Manual / Shared governance variables / Drift detection              | **✅ Decided:** **Shared governance variables** in the Platform LZ (`org_default_branch_rules`), applied by each project module at project creation time. GitHub uses org-level rulesets; Azure DevOps applies the same rules as project-level branch policies. See Section 9.5 for the governance parity matrix.                                                                                                                             |
+| 2   | Should BYO VNet be supported at the **LZ level** (the LZ itself uses an external VNet) or only at the **project level**?    | LZ-level BYO / Project-level BYO / Both                             | **✅ Decided:** Start with **project-level BYO VNet**. LZ-level BYO is a larger change and can be added later. Repo-level BYO VNet (different VNets per repo within a project) is **not practical** — see [ADR-005](./adr/ADR-005-vnet-architecture.md) for analysis.                                                                                                                                                                         |
+| 3   | How should per-repo identities be named to stay within Azure naming limits?                                                 | `uami-<project>-<repo>-<env>-<job>-<rand>` / Hash-based short names | **✅ Decided:** Mixed approach — `uami-<project>-<repo>-<hash>`. Project and repo names remain human-readable for identification; `<hash>` is a short hash derived from env + job type + random seed. No need for env/job to appear in the name — they are encoded in the hash for collision resistance while keeping the name within Azure's 128-char limit. See [ADR-008](./adr/ADR-008-naming-collision-resistance.md) for details.        |
+| 4   | Should repository profiles be extensible by users or fixed?                                                                 | Fixed set / User-defined profiles via HCL                           | **✅ Decided:** Start with a **fixed set** (`infra`, `app`, `library`, `docs`); allow user-defined extension later. The fixed set covers the vast majority of use cases. See [ADR-003](./adr/ADR-003-project-multi-repo-model.md) for profile definitions and design philosophy.                                                                                                                                                              |
+| 5   | Should the org-level ruleset be enforced or advisory?                                                                       | `active` / `evaluate` (audit-only)                                  | **✅ Decided:** Default to **`active`** (enforced) with bypass for org admins. Advisory mode (`evaluate`) can be used during rollout but the default should enforce branch protection. See [ADR-006](./adr/ADR-006-organization-governance.md) (`enforcement = "active"`, bypass for `OrganizationAdmin`).                                                                                                                                    |
+| 6   | Should BYO VNet projects share the platform ACA Environment or create their own?                                            | Shared / Per-project / Configurable                                 | **✅ Decided:** **Per-project ACA Environment** in the BYO VNet. Sharing the platform ACA Environment is not possible when the project uses a different VNet — ACA Environment requires subnet delegation in the project's VNet. See [ADR-005](./adr/ADR-005-vnet-architecture.md) for network resolution logic.                                                                                                                              |
+| 7   | How to handle projects that need only a subset of environments (e.g., just dev + prod)?                                     | Allow `subscriptions` to be a subset / Require all 4                | **✅ Decided:** **Allow subset** — only create environments for the subscriptions provided. The module creates GitHub Actions Environments, UAMIs, and federated identity credentials only for the environments present in `subscriptions`. See [ADR-003](./adr/ADR-003-project-multi-repo-model.md) for a sample `terraform.tfvars` with dev + prod only.                                                                                    |
+| 8   | For Azure DevOps, should the DevOps LZ always create a new ADO Project, or support referencing an existing one?             | Always create / Reference existing / Both                           | **✅ Decided:** **Both** — the `create_project` variable already exists in the `azure_devops` module. When `create_project = false`, the module references an existing ADO project by name. See [ADR-004](./adr/ADR-004-github-ado-abstraction.md) for the variable definition.                                                                                                                                                               |
+| 9   | Should the GitOps provisioning workflow use GitHub-hosted runners or self-hosted runners?                                   | GitHub-hosted / Self-hosted / Configurable                          | **✅ Decided:** **Self-hosted runners** (required for private network access to tfstate storage and Azure resources behind private endpoints). The provisioning workflow uses `runs-on: [self-hosted, devops-lz]`. See [ADR-007](./adr/ADR-007-gitops-onboarding.md) for the workflow definition.                                                                                                                                             |
+| 10  | How should Azure DevOps branch policies (project-scoped) be kept in sync with GitHub org-level rulesets when both are used? | Manual / Shared governance variables / Drift detection              | **✅ Decided:** **Shared governance variables** in the Platform LZ (`org_default_branch_rules`), applied by each project module at project creation time. GitHub uses org-level rulesets; Azure DevOps applies the same rules as project-level branch policies. See [ADR-006](./adr/ADR-006-organization-governance.md) for the governance parity matrix.                                                                                     |
 
 ---
 
