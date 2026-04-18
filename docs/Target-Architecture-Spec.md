@@ -1,6 +1,6 @@
 # Target Architecture Specification (DRAFT)
 
-> **Status:** Draft v0.5.5 — added per-layer resource list tables (root bootstrap, organization-wide Platform LZ, per-project) at the end of Section 1, immediately after the architecture diagrams, so each resource's identity and purpose is explicit at the layer it belongs to. v0.5.4 reconciled the three-tier VNet wording so that in `platform` mode, the project's runner network is a project-dedicated subnet slice inside the shared Platform LZ VNet (not a separate project-owned VNet). v0.5.3 added three target-architecture diagrams at the end of Section 1 (Org-Project-Repo-Env hierarchy + two-layer state, three-tier VNet model + BYO consistency, project module composition).
+> **Status:** Draft v0.5.6 — added §8.0.3 explicitly justifying why `network_mode = "platform"` is a first-class design choice (low-friction default onboarding, centralized network ops, automatic satisfaction of the seven BYO consistency rules, ramp to BYO) rather than a backward-compatibility holdover; refreshed §8.2 wording and Goal 9 in §1 accordingly so platform mode and BYO mode are presented as two intentional, complementary modes. v0.5.5 added per-layer resource list tables (root bootstrap, organization-wide Platform LZ, per-project) at the end of Section 1, immediately after the architecture diagrams, so each resource's identity and purpose is explicit at the layer it belongs to. v0.5.4 reconciled the three-tier VNet wording so that in `platform` mode, the project's runner network is a project-dedicated subnet slice inside the shared Platform LZ VNet (not a separate project-owned VNet). v0.5.3 added three target-architecture diagrams at the end of Section 1 (Org-Project-Repo-Env hierarchy + two-layer state, three-tier VNet model + BYO consistency, project module composition).
 >
 > **Main Purpose:** Define and refine the correct **Organization → Project → Repository → Environment** (Org-Project-Repo-Env) resource hierarchy for the DevOps Landing Zone. Every gap, goal, and design decision in this document exists to achieve a clear, consistent mapping of this hierarchy to Azure resources, VCS platforms (GitHub / Azure DevOps), and Terraform state management.
 >
@@ -125,9 +125,11 @@ Every gap identified below, every goal, and every design decision in subsequent 
 
 - New projects and new repositories are requested via a governance repository (issue → YAML PR → automated `project_*` apply), so Platform LZ and project team interactions are auditable and reviewable.
 
-**9. BYO VNet with consistency rules** (§8.0.1)
+**9. Two intentional network modes — `platform` and `byo` — with consistency rules** (§8.0.1, §8.0.3)
 
-- A BYO project VNet must satisfy seven consistency rules vs. the Platform LZ VNet (private DNS zone linkage, bootstrap SA/KV reachability via peering, ACR pull path, ACA subnet delegation, address-space non-overlap, split-horizon DNS isolation, cross-environment VNet consistency). These rules are the contract that makes BYO mode interchangeable with platform mode.
+- `network_mode = "platform"` is the **low-friction default** for projects that do not (yet) own an enterprise spoke VNet: the Platform LZ pre-provisions the VNet, NAT egress, private DNS zones, and bootstrap private endpoints once at the org level, and the project consumes a project-dedicated subnet slice via LZ outputs. All seven BYO consistency rules are satisfied automatically with no peering or DNS-link work for the project team.
+- `network_mode = "byo"` is the **enterprise integration mode** for projects that must land in a pre-provisioned hub-and-spoke spoke (corporate firewall, DNS forwarding, address-plan governance). The project supplies an existing VNet/subnet IDs and must satisfy the seven consistency rules vs. the Platform LZ VNet (private DNS zone linkage, bootstrap SA/KV reachability via peering, ACR pull path, ACA subnet delegation, address-space non-overlap, split-horizon DNS isolation, cross-environment VNet consistency).
+- Both modes are first-class and complementary — `platform` mode is **not** retained for backward compatibility (see §8.0.3 for the rationale). A project may also start in `platform` mode and migrate to `byo` later without changing the project module contract.
 
 **10. `project_azuredevops` at parity with `project_github`** (§6, §7)
 
@@ -1262,6 +1264,26 @@ The runner's deployment actions (e.g., creating an App Service with a private en
 
 For `network_mode = "platform"`, the Platform LZ VNet serves as the DevOps VNet, and the same peering/hub-and-spoke requirement applies: the Platform LZ VNet must be peered (or otherwise reachable) from each target subscription's Application VNet for the runner to manage private-link resources there.
 
+#### 8.0.3 Why `network_mode = "platform"` is a first-class design choice (not backward compatibility)
+
+`platform` mode is not retained for backward compatibility. It is an intentional, first-class onboarding mode that exists alongside `byo` mode for the following architectural reasons. If `platform` mode were removed, every project would be required to negotiate a pre-provisioned enterprise VNet before the DevOps Landing Zone could be used at all — which is incompatible with the GitOps onboarding goal (§10) and with greenfield product teams.
+
+| Aspect                                              | Value of `network_mode = "platform"`                                                                                                                                                                                                                                                                                                                                             |
+| --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Low-friction onboarding**                         | A project team can stand up its DevOps environment without owning, requesting, or coordinating an enterprise spoke VNet. The Platform LZ already created the VNet, NAT egress, bootstrap private endpoints (SA/KV), and `privatelink.*` DNS zones at org provisioning time; the project just consumes a project-dedicated subnet slice via LZ outputs.                           |
+| **Greenfield / POC / pre-enterprise projects**      | New product lines, prototypes, or early-stage projects often do not yet have an assigned enterprise spoke. `platform` mode makes the DevOps Landing Zone usable on day one for these projects, without blocking them on a central networking ticket.                                                                                                                             |
+| **Automatic satisfaction of the consistency rules** | All seven §8.0.1 consistency rules (DNS zone linkage, bootstrap SA/KV reachability, ACR pull path, ACA subnet delegation, address-space non-overlap, split-horizon DNS, cross-environment VNet consistency) are satisfied by construction in `platform` mode — no peering, no DNS link resource, no firewall ticket. In `byo` mode the project must satisfy them explicitly.     |
+| **Centralized cost and operational hygiene**        | One shared Platform LZ VNet (with project-dedicated subnets) is cheaper than N project-owned VNets and consolidates DNS-zone hygiene, NAT egress IP allocation, and private-endpoint inventory into a single place owned by the platform team.                                                                                                                                   |
+| **Migration ramp to BYO**                           | A project can start in `platform` mode for fast bring-up and later switch to `byo` once enterprise networking provides a spoke, without changing the project module contract (`network_mode` flips from `"platform"` to `"byo"`; the `byo_vnet` block is added). The `terraform state mv` / re-bind path is straightforward because the project module owns the ACA Environment. |
+| **Default safe path**                               | `platform` is the documented default of `network_mode`, so a minimal `terraform.tfvars` works out of the box. `byo` is opt-in for the explicit enterprise integration scenario.                                                                                                                                                                                                  |
+
+When `network_mode = "byo"` is the right choice — and when not.
+
+- Use **`byo`** when the project must land in a pre-provisioned spoke for compliance, central firewall/DNS, address-plan governance, or peering with on-prem.
+- Use **`platform`** for everything else: greenfield projects, POCs, projects that have no central networking constraint, and projects that want zero VNet-related ticket dependencies during onboarding.
+
+In short: BYO mode exists to satisfy enterprise constraints; `platform` mode exists to make those constraints **optional** instead of mandatory. Removing `platform` mode would force the LZ to assume every consumer is an enterprise with an existing spoke, which contradicts the LZ's onboarding and self-service goals.
+
 ---
 
 ### 8.1 Problem
@@ -1274,12 +1296,12 @@ Today the Landing Zone always creates a fresh VNet with all required subnets. En
 
 ### 8.2 Design
 
-Add a `network_mode` variable that selects between two modes:
+Add a `network_mode` variable that selects between two intentional, complementary modes (rationale in §8.0.3):
 
-| Mode       | Description                                                      | Who creates VNet?          | Who provides subnet IDs?        |
-| ---------- | ---------------------------------------------------------------- | -------------------------- | ------------------------------- |
-| `platform` | Current behavior (default). The LZ creates and manages the VNet. | `devops/lz` module         | `devops/lz` outputs             |
-| `byo`      | Enterprise-provided VNet. User supplies existing subnet IDs.     | External (networking team) | User input at **project level** |
+| Mode       | Description                                                                                                                                          | Who creates VNet?          | Who provides subnet IDs?        |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- | ------------------------------- |
+| `platform` | **Default low-friction onboarding mode.** The LZ creates and manages a shared platform VNet; each project consumes a project-dedicated subnet slice. | `devops/lz` module         | `devops/lz` outputs             |
+| `byo`      | **Enterprise integration mode.** The user supplies an existing spoke VNet and subnet IDs; the project module satisfies the §8.0.1 consistency rules. | External (networking team) | User input at **project level** |
 
 ### 8.3 Landing Zone changes (`devops/lz`)
 
