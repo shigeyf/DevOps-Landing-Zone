@@ -1,6 +1,6 @@
 # Target Architecture Specification (DRAFT)
 
-> **Status:** Draft v0.5.1 — technical consistency pass: aligned §5.4 / §3.3 Tier 2 / §8.3 / Key Terms / Reading guide / Gap table with the v0.5 target-architecture framing of the ACA Environment refactor and three-tier VNet model
+> **Status:** Draft v0.5.2 — added an "Architecture goals (target at a glance)" subsection at the end of Section 1 summarizing the ten target-architecture pillars (hierarchy, two-layer state, three-tier VNet, project-scoped ACA Environment, identity model, unified GitHub/ADO abstraction, governance, GitOps onboarding, BYO VNet consistency rules, `project_azuredevops` parity) so readers see the destination before as-is / gaps / to-be details
 >
 > **Main Purpose:** Define and refine the correct **Organization → Project → Repository → Environment** (Org-Project-Repo-Env) resource hierarchy for the DevOps Landing Zone. Every gap, goal, and design decision in this document exists to achieve a clear, consistent mapping of this hierarchy to Azure resources, VCS platforms (GitHub / Azure DevOps), and Terraform state management.
 >
@@ -79,6 +79,61 @@ Every gap identified below, every goal, and every design decision in subsequent 
 9. Clarify the **identity and subscription mapping** strategy — UAMIs are project-scoped, subscriptions are declared per project, with optional per-repo identity isolation.
 10. Implement the `project_azuredevops` root module to achieve parity with `project_github`.
 11. Provide a simple migration guide for V1 users to adopt the redesigned V2 architecture.
+
+### Architecture goals (target at a glance)
+
+> **Purpose of this subsection.** Before the rest of the document dives into the as-is state, the gaps, the to-be design, and how each gap is closed, this subsection summarizes **where we are going** so readers have the target architecture in mind throughout. Each bullet below is realized by the section referenced in parentheses; no new decisions are introduced here.
+
+**1. Four-layer resource hierarchy — Organization → Project → Repository → Environment** (§2)
+
+- **Organization (Platform LZ, `devops/lz`)** — shared, org-wide infrastructure: bootstrap Storage Account (Layer 1 state), ACR, Log Analytics, container-run UAMI, Platform VNet, private DNS zones, Dev Center, container image build tasks.
+- **Project (`project_github` / `project_azuredevops`)** — the unit of team ownership and billing isolation. Owns per-project UAMIs, OIDC credentials, Layer 2 state Storage Account, ACA Environment, project DevOps VNet (platform-provided or BYO), and DevBox pool.
+- **Repository** — one or more repos per project, each driven by a CI/CD profile (e.g., `terraform-env`, `container-image`).
+- **Environment** — 1:1 mapping of a GitHub/ADO environment to an Azure subscription plus its plan/apply UAMI pair. Environments are declarative (a subset of {features, development, staging, production} is allowed).
+
+**2. Two-layer state management** (§3.2)
+
+- **Layer 1 — Platform state** (single Storage Account, created by `_bootstrap`): stores tfstate for bootstrap, Platform LZ, and project provisioning (`project_github` / `project_azuredevops`).
+- **Layer 2 — Per-project application state** (one Storage Account per project, created during project provisioning): stores tfstate for the project team's own application IaC (e.g., workload VNets, AKS, app resources). Layer 2 is fully owned by the project and is reached over private endpoint from the project DevOps VNet.
+
+**3. Three-tier VNet model** (§8.0)
+
+- **Platform LZ VNet** (org-scoped, `devops/lz`) — private endpoints for bootstrap SA/KV, NAT egress, shared DNS zones.
+- **Project DevOps VNet** (project-scoped, = Platform VNet in `platform` mode or a BYO VNet in `byo` mode) — hosts the runner ACA Environment, Layer 2 tfstate private endpoint, and DevBox pool.
+- **Application / Workload VNet** (per-environment, owned by the project team's own IaC) — where actual app workloads deploy. Peering between Project DevOps VNet and Application VNet is an enterprise hub-and-spoke concern and is **not** created by the LZ.
+
+**4. Project-scoped ACA Environment for self-hosted runners** (§5.4.1)
+
+- ACA Environment is created by the **project module** and bound to a subnet of the Project DevOps VNet, because an ACA Environment is bound to exactly one VNet and therefore cannot serve BYO-VNet projects from a shared platform location.
+- Platform LZ continues to provide the shared prerequisites: ACR, Log Analytics, container-run UAMI, container image build tasks, and private DNS zones.
+
+**5. Identity and subscription mapping** (§6.5, §5.2)
+
+- Each project gets **7 UAMIs** created at project time: `feat-plan`, `dev-plan`, `stg-plan`, `prod-plan`, `dev-apply`, `stg-apply`, `prod-apply`. All UAMIs live in the org-level Identity RG (centralized RBAC and discoverability) but are project-scoped in naming and lifecycle.
+- Subscriptions are declared per project; role assignments on subscriptions are conditional on the subscription being present, so a project can opt into a subset of environments.
+- OIDC federated credentials bind each UAMI to the matching GitHub environment / ADO service connection.
+
+**6. Unified GitHub / Azure DevOps abstraction** (§7)
+
+- A DevOps LZ "Project" is a platform-agnostic concept. For GitHub, a Project is a naming prefix + a repository set + 7 UAMIs. For Azure DevOps, a Project maps 1:1 to an `azuredevops_project`. Governance variables (rulesets, runner groups, repository defaults) are defined once and applied to the correct primitive on each platform.
+
+**7. Organization-level governance** (§9)
+
+- Platform-agnostic governance inputs drive GitHub rulesets + runner groups + repository defaults, and Azure DevOps branch policies + agent pools + project settings, so both platforms reach governance parity from the same declarative source.
+
+**8. GitOps-driven project / repository onboarding** (§10)
+
+- New projects and new repositories are requested via a governance repository (issue → YAML PR → automated `project_*` apply), so Platform LZ and project team interactions are auditable and reviewable.
+
+**9. BYO VNet with consistency rules** (§8.0.1)
+
+- A BYO project VNet must satisfy seven consistency rules vs. the Platform LZ VNet (private DNS zone linkage, bootstrap SA/KV reachability via peering, ACR pull path, ACA subnet delegation, address-space non-overlap, split-horizon DNS isolation, cross-environment VNet consistency). These rules are the contract that makes BYO mode interchangeable with platform mode.
+
+**10. `project_azuredevops` at parity with `project_github`** (§6, §7)
+
+- The Azure DevOps root module implements the same Project → Repo → Environment contract, the same 7-UAMI identity model, the same Layer 2 state storage, and the same ACA Environment binding as `project_github`.
+
+> **Reading the rest of the document.** With these ten goals in mind: Sections 2–3 define hierarchy and state layering; Section 4 gives the target module layout; Section 5 reviews Platform LZ resource scoping (including §5.4.1's project-scoped ACA Environment); Sections 6–7 define the Project and the GitHub/ADO abstraction; Section 8 defines VNet architecture and BYO VNet; Section 9 defines governance; Section 10 defines GitOps onboarding; Sections 11–14 cover naming, migration, decisions, and remaining follow-ups.
 
 ---
 

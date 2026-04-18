@@ -2,7 +2,7 @@
 
 [English](./Target-Architecture-Spec.md) | [日本語](./Target-Architecture-Spec.ja.md)
 
-> **ステータス:** Draft v0.5.1 — 技術的整合性レビューパス: §5.4 / §3.3 Tier 2 / §8.3 / 主要用語 / 読み方ガイド / ギャップ表の各箇所を、v0.5 の ACA Environment リファクタリングおよび 3 層 VNet モデルのターゲットアーキテクチャ記述と整合させた
+> **ステータス:** Draft v0.5.2 — セクション 1 の末尾に「アーキテクチャゴール（ターゲット全体像）」サブセクションを追加。ターゲットアーキテクチャの 10 本柱（階層、2 層状態、3 層 VNet、プロジェクトスコープ ACA Environment、ID モデル、GitHub/ADO 統一抽象化、ガバナンス、GitOps オンボーディング、BYO VNet 整合性ルール、`project_azuredevops` パリティ）を要約し、as-is / ギャップ / to-be の詳細に入る前に到達点を示すようにした
 >
 > **主目的:** DevOps Landing Zone の正しい **Organization → Project → Repository → Environment（Org-Project-Repo-Env）** リソース階層を定義し精緻化する。本ドキュメントのすべてのギャップ、目標、設計決定は、この階層を Azure リソース、VCS プラットフォーム（GitHub / Azure DevOps）、および Terraform 状態管理に正しくマッピングするために存在する。
 >
@@ -81,6 +81,61 @@
 9. **ID とサブスクリプションマッピング** 戦略を明確にする — UAMI はプロジェクトスコープ、サブスクリプションはプロジェクトごとに宣言、オプションでリポジトリ別 ID 分離。
 10. `project_github` とのパリティを達成するために `project_azuredevops` ルートモジュールを実装する。
 11. V1 ユーザーが再設計された V2 アーキテクチャを採用するための簡単な移行ガイドを提供する。
+
+### アーキテクチャゴール（ターゲット全体像）
+
+> **このサブセクションの目的。** ドキュメントの残りが現状（as-is）、ギャップ、目指す姿（to-be）、各ギャップの解消方法を詳述する前に、本サブセクションでは**到達点**を要約し、ターゲットアーキテクチャを念頭に置いて読み進められるようにします。各項目は括弧内で参照するセクションで実現されます。ここで新しい設計判断を導入するものではありません。
+
+**1. 4 層のリソース階層 — Organization → Project → Repository → Environment**（§2）
+
+- **Organization（Platform LZ, `devops/lz`）** — 組織全体で共有されるインフラ: ブートストラップ Storage Account（Layer 1 状態）、ACR、Log Analytics、container-run UAMI、Platform VNet、Private DNS ゾーン、Dev Center、コンテナイメージビルドタスク。
+- **Project（`project_github` / `project_azuredevops`）** — チーム所有と課金分離の単位。プロジェクト固有の UAMI、OIDC 認証情報、Layer 2 状態 Storage Account、ACA Environment、Project DevOps VNet（プラットフォーム提供または BYO）、DevBox プールを所有。
+- **Repository** — プロジェクトごとに 1 つ以上のリポジトリ。各リポジトリは CI/CD プロファイル（例: `terraform-env`、`container-image`）に従う。
+- **Environment** — GitHub/ADO 環境と Azure サブスクリプション + plan/apply UAMI ペアとの 1:1 対応。環境は宣言的で、{features, development, staging, production} のサブセットを許可。
+
+**2. 2 層状態管理**（§3.2）
+
+- **Layer 1 — プラットフォーム状態**（`_bootstrap` で作成される単一 Storage Account）: bootstrap、Platform LZ、プロジェクトプロビジョニング（`project_github` / `project_azuredevops`）の tfstate を保存。
+- **Layer 2 — プロジェクトごとのアプリケーション状態**（プロジェクトプロビジョニング時に作成されるプロジェクトごとの Storage Account）: プロジェクトチーム自身のアプリ IaC（ワークロード VNet、AKS、アプリリソース等）の tfstate を保存。Layer 2 はプロジェクトが完全所有し、Project DevOps VNet からプライベートエンドポイント経由で到達。
+
+**3. 3 層 VNet モデル**（§8.0）
+
+- **Platform LZ VNet**（組織スコープ、`devops/lz`）— ブートストラップ SA/KV のプライベートエンドポイント、NAT エグレス、共有 DNS ゾーン。
+- **Project DevOps VNet**（プロジェクトスコープ、`platform` モードでは Platform VNet、`byo` モードでは BYO VNet）— ランナー ACA Environment、Layer 2 tfstate プライベートエンドポイント、DevBox プールをホスト。
+- **Application / Workload VNet**（環境ごと、プロジェクトチーム自身の IaC が所有）— 実際のアプリワークロードのデプロイ先。Project DevOps VNet と Application VNet 間のピアリングはエンタープライズ hub-and-spoke の関心事であり、**LZ では作成しない**。
+
+**4. セルフホステッドランナー向けのプロジェクトスコープ ACA Environment**（§5.4.1）
+
+- ACA Environment は**プロジェクトモジュール**により作成され、Project DevOps VNet のサブネットにバインドされる。ACA Environment は厳密に 1 つの VNet にバインドされるため、BYO VNet プロジェクトを共有プラットフォーム側から提供することは構造上不可能。
+- Platform LZ は引き続き共有前提リソース（ACR、Log Analytics、container-run UAMI、コンテナイメージビルドタスク、Private DNS ゾーン）を提供。
+
+**5. ID とサブスクリプションマッピング**（§6.5、§5.2）
+
+- 各プロジェクトはプロジェクト作成時に **7 つの UAMI** を取得: `feat-plan`、`dev-plan`、`stg-plan`、`prod-plan`、`dev-apply`、`stg-apply`、`prod-apply`。全 UAMI は組織レベルの Identity RG（中央集約された RBAC と発見性）に置かれるが、命名とライフサイクルはプロジェクトスコープ。
+- サブスクリプションはプロジェクトごとに宣言。サブスクリプションに対するロール割当はサブスクリプション存在時の条件付きのため、プロジェクトは環境のサブセットを選択可能。
+- OIDC フェデレーション認証情報が各 UAMI を対応する GitHub 環境 / ADO サービス接続に紐付ける。
+
+**6. GitHub / Azure DevOps の統一抽象化**（§7）
+
+- DevOps LZ "Project" はプラットフォーム非依存の概念。GitHub では Project は命名プレフィックス + リポジトリセット + 7 UAMI。Azure DevOps では Project は `azuredevops_project` に 1:1 対応。ガバナンス変数（ルールセット、ランナーグループ、リポジトリデフォルト）は一度定義し、各プラットフォームで正しいプリミティブに適用。
+
+**7. 組織レベルのガバナンス**（§9）
+
+- プラットフォーム非依存のガバナンス入力が GitHub ルールセット + ランナーグループ + リポジトリデフォルト、および Azure DevOps ブランチポリシー + エージェントプール + プロジェクト設定を駆動し、両プラットフォームが同一の宣言的ソースからガバナンスパリティに到達。
+
+**8. GitOps 駆動のプロジェクト / リポジトリ オンボーディング**（§10）
+
+- 新規プロジェクトおよびリポジトリはガバナンスリポジトリ経由で要求される（Issue → YAML PR → 自動 `project_*` apply）。これにより Platform LZ とプロジェクトチームの相互作用は監査可能かつレビュー可能になる。
+
+**9. 整合性ルール付き BYO VNet**（§8.0.1）
+
+- BYO プロジェクト VNet は Platform LZ VNet に対し 7 つの整合性ルール（Private DNS ゾーンリンク、ピアリング経由でのブートストラップ SA/KV 到達性、ACR pull 経路、ACA サブネット委任、アドレス空間非重複、split-horizon DNS 分離、環境間 VNet 一貫性）を満たす必要がある。これらのルールは BYO モードを platform モードと交換可能にする契約である。
+
+**10. `project_github` とパリティの `project_azuredevops`**（§6、§7）
+
+- Azure DevOps ルートモジュールは、`project_github` と同じ Project → Repo → Environment 契約、同じ 7-UAMI ID モデル、同じ Layer 2 状態ストレージ、同じ ACA Environment バインドを実装する。
+
+> **ドキュメントの残りの読み方。** これら 10 のゴールを念頭に: §2–§3 で階層と状態レイヤを定義; §4 でターゲットのモジュール構成; §5 で Platform LZ リソーススコープ（§5.4.1 のプロジェクトスコープ ACA Environment を含む）をレビュー; §6–§7 で Project と GitHub/ADO 抽象化を定義; §8 で VNet アーキテクチャと BYO VNet; §9 でガバナンス; §10 で GitOps オンボーディング; §11–§14 で命名、移行、意思決定、残課題。
 
 ---
 
