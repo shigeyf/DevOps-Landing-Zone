@@ -1,6 +1,6 @@
 # Target Architecture Specification (DRAFT)
 
-> **Status:** Draft v0.5.7 — added §8.0.4 explaining why, in `platform` mode, the runner VNet is created at the **Platform LZ (organization) layer** rather than at the project layer, with a comprehensive comparison against the hypothetical "project-creates-its-own-VNet-in-platform-mode" alternative (DNS-zone singletons, bootstrap SA/KV PE reachability, NAT egress IP economy, address-space governance, peering / DNS-link fan-out cost, ACA subnet delegation cost). v0.5.6 added §8.0.3 explicitly justifying why `network_mode = "platform"` is a first-class design choice (low-friction default onboarding, centralized network ops, automatic satisfaction of the seven BYO consistency rules, ramp to BYO) rather than a backward-compatibility holdover; refreshed §8.2 wording and Goal 9 in §1 accordingly so platform mode and BYO mode are presented as two intentional, complementary modes. v0.5.5 added per-layer resource list tables (root bootstrap, organization-wide Platform LZ, per-project) at the end of Section 1, immediately after the architecture diagrams, so each resource's identity and purpose is explicit at the layer it belongs to. v0.5.4 reconciled the three-tier VNet wording so that in `platform` mode, the project's runner network is a project-dedicated subnet slice inside the shared Platform LZ VNet (not a separate project-owned VNet). v0.5.3 added three target-architecture diagrams at the end of Section 1 (Org-Project-Repo-Env hierarchy + two-layer state, three-tier VNet model + BYO consistency, project module composition).
+> **Status:** Draft v0.5.8 — added §8.0.5 with detailed network diagrams for both `network_mode = "platform"` and `network_mode = "byo"`. The platform-mode diagram shows project-dedicated runner subnet placement inside the shared Platform LZ VNet (no peering, no per-project DNS link, single shared NAT egress) with concrete CIDR examples and DNS-zone link points. The BYO-mode diagram is elaborated with subnet-level layout of the enterprise spoke (delegated ACA subnet, PE subnet, optional DevBox subnet), the BYO ↔ Platform LZ peering and DNS-link path required to reach bootstrap SA/KV/ACR PEs, and a per-row ownership table mapping each resource/connection to `devops/lz`, the project module, or the enterprise networking team. v0.5.7 — added §8.0.4 explaining why, in `platform` mode, the runner VNet is created at the **Platform LZ (organization) layer** rather than at the project layer, with a comprehensive comparison against the hypothetical "project-creates-its-own-VNet-in-platform-mode" alternative (DNS-zone singletons, bootstrap SA/KV PE reachability, NAT egress IP economy, address-space governance, peering / DNS-link fan-out cost, ACA subnet delegation cost). v0.5.6 added §8.0.3 explicitly justifying why `network_mode = "platform"` is a first-class design choice (low-friction default onboarding, centralized network ops, automatic satisfaction of the seven BYO consistency rules, ramp to BYO) rather than a backward-compatibility holdover; refreshed §8.2 wording and Goal 9 in §1 accordingly so platform mode and BYO mode are presented as two intentional, complementary modes. v0.5.5 added per-layer resource list tables (root bootstrap, organization-wide Platform LZ, per-project) at the end of Section 1, immediately after the architecture diagrams, so each resource's identity and purpose is explicit at the layer it belongs to. v0.5.4 reconciled the three-tier VNet wording so that in `platform` mode, the project's runner network is a project-dedicated subnet slice inside the shared Platform LZ VNet (not a separate project-owned VNet). v0.5.3 added three target-architecture diagrams at the end of Section 1 (Org-Project-Repo-Env hierarchy + two-layer state, three-tier VNet model + BYO consistency, project module composition).
 >
 > **Main Purpose:** Define and refine the correct **Organization → Project → Repository → Environment** (Org-Project-Repo-Env) resource hierarchy for the DevOps Landing Zone. Every gap, goal, and design decision in this document exists to achieve a clear, consistent mapping of this hierarchy to Azure resources, VCS platforms (GitHub / Azure DevOps), and Terraform state management.
 >
@@ -1292,7 +1292,7 @@ The design contrast is summarized below. "Project-owned VNet" here means a VNet 
 
 | Concern                                                     | Platform-layer VNet (current target)                                                                                                                                                                                                                                                                 | Hypothetical project-owned VNet (in non-BYO mode)                                                                                                                                                                                                                                                                       |
 | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Bootstrap Storage Account / Key Vault Private Endpoints** | The bootstrap SA (Layer 1 tfstate) and Key Vault are **single, organization-scoped resources** (Table A in §1). Their Private Endpoints are deployed once into the Platform LZ VNet at LZ apply time. Every project subnet in that VNet can reach them with **zero additional configuration**.       | Each project VNet would need its own peering to reach those PEs **or** would need a duplicate set of PEs in the project VNet — but you cannot duplicate the underlying SA/KV (they are org singletons). So you are forced into project↔platform VNet peering, which is exactly the BYO consistency-rule work (§8.0.1).  |
+| **Bootstrap Storage Account / Key Vault Private Endpoints** | The bootstrap SA (Layer 1 tfstate) and Key Vault are **single, organization-scoped resources** (Table A in §1). Their Private Endpoints are deployed once into the Platform LZ VNet at LZ apply time. Every project subnet in that VNet can reach them with **zero additional configuration**.       | Each project VNet would need its own peering to reach those PEs **or** would need a duplicate set of PEs in the project VNet — but you cannot duplicate the underlying SA/KV (they are org singletons). So you are forced into project↔platform VNet peering, which is exactly the BYO consistency-rule work (§8.0.1). |
 | **Private DNS zones (`privatelink.*`)**                     | A given `privatelink.<service>.core.windows.net` zone is effectively a **singleton** in the LZ subscription. The Platform LZ owns the canonical zones and the LZ VNet is linked to them once. Records published by SA/KV/ACR/ACA PEs resolve correctly from any project subnet inside the same VNet. | Each project VNet would need either (a) its own copy of the same `privatelink` zones (which causes split-horizon collisions and duplicates A-records), or (b) explicit `privateDnsZoneVirtualNetworkLink` per (zone × project VNet) — i.e. exactly §8.0.1 rule #1, paid by every project for nothing in return.         |
 | **NAT egress / firewall allowlists**                        | One NAT Gateway with a **small, stable set of egress public IPs** is shared by all project subnets. SaaS providers, GitHub, registry mirrors, etc. can be allowlisted **once** at the org level.                                                                                                     | N project NAT Gateways → N egress IP sets → O(N) allowlist entries to maintain externally. Cost and operational burden scale linearly with project count, with no functional benefit.                                                                                                                                   |
 | **Address-space governance**                                | Subnet slices are carved from a **central /16-class address plan** owned by the platform team; non-overlap (§8.0.1 rule #5) is guaranteed by construction.                                                                                                                                           | Each project module would need its own (overlapping or random) address space, or a separate IPAM. This re-creates the exact problem BYO mode was designed for, but without an enterprise IPAM to solve it.                                                                                                              |
@@ -1303,6 +1303,167 @@ The design contrast is summarized below. "Project-owned VNet" here means a VNet 
 | **Already-equivalent-to-BYO if you peer**                   | n/a                                                                                                                                                                                                                                                                                                  | If the project VNet still must reach the platform SA/KV PEs, the project VNet must peer to the platform VNet and link to all platform DNS zones. That is **exactly BYO mode**, just without an enterprise spoke. So this hypothetical mode is dominated by either (`platform`) or (`byo`); it is never the best choice. |
 
 **Two-line summary.** Platform-layer ownership of the VNet in `platform` mode follows directly from the fact that the **Platform LZ already owns the bootstrap SA/KV PEs, the shared private DNS zones, the shared NAT, the shared ACR, and the shared address-plan governance**. Co-locating runner subnets in that same VNet is the cheapest, simplest, and most correct way to give projects access to those organization-shared resources without re-implementing the seven §8.0.1 consistency rules in every project. When a project _has_ a real reason to live somewhere else (enterprise spoke, central firewall, on-prem peering), it switches to `byo` mode and accepts the cost of re-establishing those rules explicitly. There is no useful third option in between.
+
+#### 8.0.5 Detailed network diagrams (platform mode and BYO mode)
+
+The high-level three-tier diagram in §8.0 intentionally hides per-subnet, DNS-link, peering, and identity binding details so the model stays readable. The diagrams below add those details for the two operational modes so that the runtime network path — from the runner container up to the bootstrap SA/KV PEs, ACR, Layer 2 project tfstate SA, and target subscription — is unambiguous. They also show which arrows are created by `devops/lz`, which by the project module, and which are out of scope of this LZ (enterprise hub-and-spoke).
+
+##### 8.0.5.1 `network_mode = "platform"` — runner co-located in the shared Platform LZ VNet
+
+In `platform` mode the project's CI/CD compute lands in a **project-dedicated subnet slice** of the shared Platform LZ VNet. The bootstrap SA/KV/ACR Private Endpoints, the `privatelink.*` DNS zones, and the NAT egress are all in the same VNet, so the runner reaches them with **no peering and no per-project DNS link** — the seven §8.0.1 consistency rules are satisfied by construction (§8.0.4).
+
+```text
+Platform LZ subscription                                              Target subscription(s) — one per environment
+┌────────────────────────────────────────────────────────────────┐    ┌───────────────────────────────────────────┐
+│ Platform LZ VNet  10.10.0.0/16   (created by devops/lz)        │    │ Application / Workload VNet (project IaC) │
+│                                                                │    │   10.50.0.0/16  (NOT created by this LZ)  │
+│  ┌──────────────────────────┐  ┌──────────────────────────┐    │    │                                           │
+│  │ pe-bootstrap   10.10.1/24│  │ devbox        10.10.4/24 │    │    │   ┌────────────────────────────────────┐  │
+│  │  PE → Bootstrap SA       │  │  Dev Box NIC pool        │    │    │   │ app-tier   10.50.1.0/24            │  │
+│  │  PE → Bootstrap KV       │  │  (DevBox network conn.)  │    │    │   │  App Service / AKS / Functions /…  │  │
+│  │  PE → ACR (runner image) │  └──────────────────────────┘    │    │   │  + their private endpoints         │  │
+│  └────────┬─────────────────┘                                  │    │   └────────────┬───────────────────────┘  │
+│           │                                                    │    │                │                          │
+│  ┌────────┴───────────────────────────────────────────────┐    │    │   ┌────────────┴───────────────────────┐  │
+│  │ project-A runner subnet  10.10.16.0/23                 │    │    │   │ pe-app  10.50.2.0/27               │  │
+│  │   delegated: Microsoft.App/environments                │    │    │   │  PE → app SQL / KV / Storage …     │  │
+│  │   ┌──────────────────────────────────────────────┐     │    │    │   └────────────────────────────────────┘  │
+│  │   │ ACA Environment  (created by project module) │     │    │    │                                           │
+│  │   │   ACA Job: tf-runner                         │     │    │    └────────────────────┬──────────────────────┘
+│  │   │     image: ACR (private pull, container-     │     │    │                         │
+│  │   │            run UAMI from Platform LZ)        │     │    │                         │ peering provided by
+│  │   │     env-job UAMIs (7 per project): plan/apply│     │    │                         │ enterprise hub-and-
+│  │   └──────────────────────────────────────────────┘     │◄───┼─────────────────────────┘ spoke (NOT this LZ)
+│  └────────────────────────────────────────────────────────┘    │                           § 8.0.2
+│                                                                │
+│  ┌────────────────────────────────────────────────────────┐    │
+│  │ pe-project-A-tfstate  10.10.17.0/27  (project module)  │    │
+│  │   PE → Layer 2 project Storage Account (Tab. C in §1)  │    │
+│  └────────────────────────────────────────────────────────┘    │
+│                                                                │
+│  ┌──────────┐                                                  │
+│  │ NAT GW   │ ← egress (single shared public IP set,           │
+│  │ + PIP    │   allowlisted once at the org level — §8.0.4)    │
+│  └────┬─────┘                                                  │
+│       │ egress to GitHub / Azure DevOps / public registries    │
+└───────┼────────────────────────────────────────────────────────┘
+        ▼
+   Internet (egress only)
+
+Private DNS zones in the Platform LZ subscription (one VNet link each, by devops/lz):
+  privatelink.blob.core.windows.net           ← bootstrap SA, project Layer 2 SA records
+  privatelink.vaultcore.azure.net             ← bootstrap KV records
+  privatelink.azurecr.io                      ← ACR records
+  privatelink.<region>.azurecontainerapps.io  ← ACA Environment records
+                              │
+                              └── linked once to Platform LZ VNet (covers ALL project subnets)
+                                  → runner resolves bootstrap SA/KV/ACR/Layer 2 SA via private IP
+                                  → no per-project DNS link, no peering, no FW change
+```
+
+Key properties of `platform` mode (cross-references in parentheses):
+
+- **Single shared VNet, project-dedicated subnets.** Platform LZ owns the address plan and carves a `/23` ACA subnet + `/27` PE subnet per project (§8.0.4 row "Address-space governance" / "ACA subnet delegation footprint"). The project module never creates the VNet; it only attaches resources to subnets exposed by `devops_network`.
+- **PE reachability is automatic.** Bootstrap SA, bootstrap KV, ACR, and Layer 2 project SA PEs are in the same VNet as the runner subnet, so no peering is needed for the runner to reach them on private IPs (§8.0.4 row "Bootstrap SA/KV PEs", §8.0.1 rule #2).
+- **Private DNS resolution is automatic.** Each `privatelink.*` zone is linked **once** to the Platform LZ VNet by `devops/lz`. The runner subnet inherits this link automatically (§8.0.1 rule #1; §8.0.4 row "Private DNS zones").
+- **NAT egress is shared.** A single NAT Gateway with a small set of static PIPs serves every project subnet — SaaS allowlists (GitHub, package registries, Microsoft Entra) need to be maintained **once** at the org level (§8.0.4 row "NAT egress / firewall allowlists").
+- **ACA Environment is project-scoped (target architecture).** Per §5.4.1, the ACA Environment itself is created by the project module inside the project's runner subnet. Platform LZ provides only the shared dependencies (ACR, Log Analytics, container-run UAMI). The current code still creates the ACA Env at LZ level (§5.4.1, Remaining Issue #6).
+- **Connectivity to Application/Workload VNets (target subscription).** The runner reaches resources in the target subscription's Application VNet via the enterprise hub-and-spoke peering — **not created by this LZ** (§8.0.2). In a greenfield setup with no hub-and-spoke, the project team is expected to peer the Platform LZ VNet ↔ each Application VNet directly, or to reach those resources over service endpoints / public endpoints if private-link is not required.
+
+##### 8.0.5.2 `network_mode = "byo"` — runner deployed into a user-supplied enterprise spoke
+
+In `byo` mode the runner subnet lives in a **pre-provisioned enterprise spoke VNet** that the LZ neither creates nor owns. The seven §8.0.1 consistency rules now have to be made explicit: peering between the BYO VNet and the Platform LZ VNet (or transit through the enterprise hub) is required to reach the bootstrap SA/KV/ACR PEs, and the BYO VNet must be linked to the Platform LZ's `privatelink.*` DNS zones so private hostnames resolve to the platform PE IPs.
+
+```text
+Platform LZ subscription (devops/lz, unchanged from platform mode)        Target subscription(s)
+┌────────────────────────────────────────────────────────────────┐         ┌───────────────────────────────────┐
+│ Platform LZ VNet  10.10.0.0/16                                 │         │ Application / Workload VNet       │
+│                                                                │         │   10.50.0.0/16  (project IaC)     │
+│  ┌──────────────────────────┐                                  │         │                                   │
+│  │ pe-bootstrap   10.10.1/24│                                  │         │   App Service / AKS / SQL / …     │
+│  │  PE → Bootstrap SA       │◄────────────┐                    │         │   + their private endpoints       │
+│  │  PE → Bootstrap KV       │             │ private IPs        │         │                                   │
+│  │  PE → ACR (runner image) │             │ resolved via       │         └────────────┬──────────────────────┘
+│  └──────────────────────────┘             │ privatelink.*      │                      │
+│                                           │ DNS zones          │  enterprise hub-and-spoke peering
+│  pe-platform Layer-2 SA records           │                    │  (NOT this LZ — § 8.0.2)
+│  exist in privatelink.blob zone, but      │                    │                      │
+│  the project Layer-2 SA / PE itself is    │                    │                      ▼
+│  in the BYO VNet (see below)              │                    │         (BYO spoke, see right)
+│                                           │                    │
+│  Private DNS zones (privatelink.*)        │                    │
+│   ─ linked to Platform LZ VNet (always)   │                    │
+│   ─ linked to BYO VNet (rule #1, by      ─┤                    │
+│     project module via DNS zone IDs       │                    │
+│     from devops_network output)           │                    │
+└───────────────────────────────────────────┼────────────────────┘
+                                            │
+                                            │  VNet ↔ VNet peering
+                                            │  (enterprise networking team —
+                                            │   rule #2, NOT this LZ)
+                                            │
+                                            ▼
+              ┌────────────────────────────────────────────────────────────────┐
+              │ BYO VNet (enterprise spoke)  10.20.0.0/16                       │
+              │   pre-existing — owned by enterprise networking team            │
+              │   peered to: hub VNet (FW/DNS proxy), Platform LZ VNet,         │
+              │              target Application VNet(s)                         │
+              │                                                                 │
+              │  ┌────────────────────────────────────────────────────────┐     │
+              │  │ aca-runner subnet  10.20.16.0/23   (BYO, user input)   │     │
+              │  │   MUST be delegated Microsoft.App/environments         │     │
+              │  │   (rule #4 — checked by Terraform precondition § 8.4)  │     │
+              │  │   ┌──────────────────────────────────────────────┐     │     │
+              │  │   │ ACA Environment  (created by project module) │     │     │
+              │  │   │   ACA Job: tf-runner                         │     │     │
+              │  │   │     image: ACR pull (via peering+DNS rule #3)│     │     │
+              │  │   │     env-job UAMIs (7 per project): plan/apply│     │     │
+              │  │   └──────────────────────────────────────────────┘     │     │
+              │  └────────────────────────────────────────────────────────┘     │
+              │                                                                 │
+              │  ┌────────────────────────────────────────────────────────┐     │
+              │  │ pe subnet  10.20.17.0/27   (BYO, user input)           │     │
+              │  │   PE → Layer 2 project Storage Account (project tfstate)│    │
+              │  └────────────────────────────────────────────────────────┘     │
+              │                                                                 │
+              │  ┌────────────────────────────────────────────────────────┐     │
+              │  │ devbox subnet  10.20.18.0/26   (optional, BYO)         │     │
+              │  └────────────────────────────────────────────────────────┘     │
+              │                                                                 │
+              │  Egress: enterprise NAT or Azure Firewall in the hub            │
+              │          (no per-project NAT GW; SaaS allowlists managed        │
+              │           centrally — rules #6, also see § 8.0.2)               │
+              └─────────────────────────────────────────────────────────────────┘
+
+Address-space rules (§8.0.1 rule #5): BYO VNet CIDR must NOT overlap with
+  - Platform LZ VNet (10.10.0.0/16 in this example) — required for peering
+  - Application / Workload VNet(s) — required for hub-and-spoke peering
+  Enforced by enterprise IPAM, not by this LZ.
+
+Private DNS resolution path (§8.0.1 rule #1) for the runner in the BYO VNet:
+  runner → DNS query for "<sa-name>.blob.core.windows.net"
+        → resolves via privatelink.blob.core.windows.net
+        → DNS zone is linked to BYO VNet by project module
+          (azurerm_private_dns_zone_virtual_network_link, one per zone,
+           using devops_network.private_dns_zone_ids from the LZ output)
+        → A-record points to PE IP in Platform LZ VNet (10.10.1.x)
+        → reachable because BYO ↔ Platform LZ peering exists (rule #2)
+```
+
+What this LZ owns vs. what the enterprise owns in `byo` mode (mapping back to §8.0.1):
+
+| Concern                                                                                       | Owned by `devops/lz` (Platform LZ)                                                                                                     | Owned by project module (`project_github` / `project_azuredevops`)                                                                                                | Owned by enterprise networking team (NOT this LZ)                                                           |
+| --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Platform LZ VNet, NAT, bootstrap SA/KV/ACR Private Endpoints, `privatelink.*` DNS zones       | ✅ Created and owned (always — same as `platform` mode).                                                                               | —                                                                                                                                                                 | —                                                                                                           |
+| BYO VNet itself (address space, NSGs, UDRs)                                                   | —                                                                                                                                      | —                                                                                                                                                                 | ✅ Pre-provisioned spoke; supplied via `byo_vnet.{vnet_id, aca_subnet_id, pe_subnet_id, devbox_subnet_id}`. |
+| Subnet delegation `Microsoft.App/environments` on the BYO ACA subnet (rule #4)                | —                                                                                                                                      | ⚠️ **Validated** by Terraform precondition; **enforced** during BYO subnet provisioning by enterprise (the project module fails fast at plan-time if missing).    | ✅ Must be set on the spoke subnet at the time it is provisioned.                                           |
+| Linking BYO VNet to Platform LZ `privatelink.*` zones (rule #1)                               | Exposes `devops_network.private_dns_zone_ids`.                                                                                         | ✅ Creates `azurerm_private_dns_zone_virtual_network_link` per zone × BYO VNet, using the IDs from the LZ output (when `byo_vnet.link_to_platform_private_dns`).  | —                                                                                                           |
+| BYO VNet ↔ Platform LZ VNet peering (rule #2 reach to bootstrap SA/KV PEs and ACR — rule #3) | —                                                                                                                                      | —                                                                                                                                                                 | ✅ Done via hub-and-spoke or direct peering; the LZ only validates connectivity at apply time.              |
+| ACA Environment + runner ACA Job + 7 UAMIs (env × job)                                        | Provides shared deps: ACR + container image build (Tab. B in §1), Log Analytics (runner logs), container-run UAMI (`acr_pull` on ACR). | ✅ Creates ACA Environment in the BYO ACA subnet, ACA Job, OIDC federated credentials, conditional subscription RBAC. (Target — see §5.4.1 / Remaining Issue #6.) | —                                                                                                           |
+| Layer 2 project tfstate Storage Account + its PE in the BYO PE subnet (Tab. C in §1)          | —                                                                                                                                      | ✅ (Target — see Remaining Issue #7.) Currently containers are still created in the Layer 1 bootstrap SA.                                                         | —                                                                                                           |
+| Connectivity from runner VNet (BYO) to target subscription Application/Workload VNets         | —                                                                                                                                      | —                                                                                                                                                                 | ✅ Standard hub-and-spoke peering or VPN/ER through the enterprise hub (see §8.0.2).                        |
+
+When peering or DNS links from §8.0.1 are missing, the runner fails with deterministic, observable errors (DNS NXDOMAIN for `privatelink.*` hostnames, TCP timeout to bootstrap SA/KV PE IPs, ACR pull failure on the ACA Job init container). The project module surfaces these as Terraform preconditions where possible (rule #4 subnet delegation) and as runtime failures otherwise — there is no silent fallback to public endpoints.
 
 ---
 
