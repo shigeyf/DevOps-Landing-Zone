@@ -1,6 +1,6 @@
 # Target Architecture Specification (DRAFT)
 
-> **Status:** Draft v0.5.9 — corrected a misunderstanding in §8.0.1 / §8.0.4 / §8.0.5 about which Private Endpoints are on the project runner data-path. The bootstrap Storage Account and bootstrap Key Vault PEs serve only the **platform admin's apply context** (`_bootstrap` / `devops/lz` / `project_github` provisioning) and are **not** read or written by the project team's runner. The project team's runner uses (a) the org-shared **ACR** PE for the runner image (rule #2 — needs BYO↔Platform LZ peering), and (b) the project's **own** Layer 2 tfstate Storage Account and project Key Vault (rule #3 — both project-owned, deployed inside the project's runner network context, so no platform peering is needed for them). Section 8.0.1 rules renumbered/rewritten accordingly (rule #1 DNS resolution, rule #2 ACR reachability, rule #3 Layer 2 SA + project KV reachability), §8.0.4 row "Bootstrap SA/KV PEs" reframed as the platform admin's apply path, §8.0.5.1 key properties and §8.0.5.2 ownership table updated, and project Key Vault added to Table C in §1. v0.5.8 — added §8.0.5 with detailed network diagrams for both `network_mode = "platform"` and `network_mode = "byo"`. The platform-mode diagram shows project-dedicated runner subnet placement inside the shared Platform LZ VNet (no peering, no per-project DNS link, single shared NAT egress) with concrete CIDR examples and DNS-zone link points. The BYO-mode diagram is elaborated with subnet-level layout of the enterprise spoke (delegated ACA subnet, PE subnet, optional DevBox subnet), the BYO ↔ Platform LZ peering and DNS-link path required to reach the org-shared ACR PE, and a per-row ownership table mapping each resource/connection to `devops/lz`, the project module, or the enterprise networking team. v0.5.7 — added §8.0.4 explaining why, in `platform` mode, the runner VNet is created at the **Platform LZ (organization) layer** rather than at the project layer, with a comprehensive comparison against the hypothetical "project-creates-its-own-VNet-in-platform-mode" alternative (DNS-zone singletons, ACR / DNS / NAT egress IP economy, address-space governance, peering / DNS-link fan-out cost, ACA subnet delegation cost). v0.5.6 added §8.0.3 explicitly justifying why `network_mode = "platform"` is a first-class design choice (low-friction default onboarding, centralized network ops, automatic satisfaction of the seven BYO consistency rules, ramp to BYO) rather than a backward-compatibility holdover; refreshed §8.2 wording and Goal 9 in §1 accordingly so platform mode and BYO mode are presented as two intentional, complementary modes. v0.5.5 added per-layer resource list tables (root bootstrap, organization-wide Platform LZ, per-project) at the end of Section 1, immediately after the architecture diagrams, so each resource's identity and purpose is explicit at the layer it belongs to. v0.5.4 reconciled the three-tier VNet wording so that in `platform` mode, the project's runner network is a project-dedicated subnet slice inside the shared Platform LZ VNet (not a separate project-owned VNet). v0.5.3 added three target-architecture diagrams at the end of Section 1 (Org-Project-Repo-Env hierarchy + two-layer state, three-tier VNet model + BYO consistency, project module composition).
+> **Status:** Draft v0.5.10 — added §5.5 discussing Self-hosted runner on ACA vs. GitHub-hosted runner with Azure private networking (APES / VNet injection), with a side-by-side comparison table and the architectural rationale for choosing self-hosted ACA (dual GitHub/ADO parity, no plan lock-in, full image control, static egress IP, region flexibility). v0.5.9 — corrected a misunderstanding in §8.0.1 / §8.0.4 / §8.0.5 about which Private Endpoints are on the project runner data-path. The bootstrap Storage Account and bootstrap Key Vault PEs serve only the **platform admin's apply context** (`_bootstrap` / `devops/lz` / `project_github` provisioning) and are **not** read or written by the project team's runner. The project team's runner uses (a) the org-shared **ACR** PE for the runner image (rule #2 — needs BYO↔Platform LZ peering), and (b) the project's **own** Layer 2 tfstate Storage Account and project Key Vault (rule #3 — both project-owned, deployed inside the project's runner network context, so no platform peering is needed for them). Section 8.0.1 rules renumbered/rewritten accordingly (rule #1 DNS resolution, rule #2 ACR reachability, rule #3 Layer 2 SA + project KV reachability), §8.0.4 row "Bootstrap SA/KV PEs" reframed as the platform admin's apply path, §8.0.5.1 key properties and §8.0.5.2 ownership table updated, and project Key Vault added to Table C in §1. v0.5.8 — added §8.0.5 with detailed network diagrams for both `network_mode = "platform"` and `network_mode = "byo"`. The platform-mode diagram shows project-dedicated runner subnet placement inside the shared Platform LZ VNet (no peering, no per-project DNS link, single shared NAT egress) with concrete CIDR examples and DNS-zone link points. The BYO-mode diagram is elaborated with subnet-level layout of the enterprise spoke (delegated ACA subnet, PE subnet, optional DevBox subnet), the BYO ↔ Platform LZ peering and DNS-link path required to reach the org-shared ACR PE, and a per-row ownership table mapping each resource/connection to `devops/lz`, the project module, or the enterprise networking team. v0.5.7 — added §8.0.4 explaining why, in `platform` mode, the runner VNet is created at the **Platform LZ (organization) layer** rather than at the project layer, with a comprehensive comparison against the hypothetical "project-creates-its-own-VNet-in-platform-mode" alternative (DNS-zone singletons, ACR / DNS / NAT egress IP economy, address-space governance, peering / DNS-link fan-out cost, ACA subnet delegation cost). v0.5.6 added §8.0.3 explicitly justifying why `network_mode = "platform"` is a first-class design choice (low-friction default onboarding, centralized network ops, automatic satisfaction of the seven BYO consistency rules, ramp to BYO) rather than a backward-compatibility holdover; refreshed §8.2 wording and Goal 9 in §1 accordingly so platform mode and BYO mode are presented as two intentional, complementary modes. v0.5.5 added per-layer resource list tables (root bootstrap, organization-wide Platform LZ, per-project) at the end of Section 1, immediately after the architecture diagrams, so each resource's identity and purpose is explicit at the layer it belongs to. v0.5.4 reconciled the three-tier VNet wording so that in `platform` mode, the project's runner network is a project-dedicated subnet slice inside the shared Platform LZ VNet (not a separate project-owned VNet). v0.5.3 added three target-architecture diagrams at the end of Section 1 (Org-Project-Repo-Env hierarchy + two-layer state, three-tier VNet model + BYO consistency, project module composition).
 >
 > **Main Purpose:** Define and refine the correct **Organization → Project → Repository → Environment** (Org-Project-Repo-Env) resource hierarchy for the DevOps Landing Zone. Every gap, goal, and design decision in this document exists to achieve a clear, consistent mapping of this hierarchy to Azure resources, VCS platforms (GitHub / Azure DevOps), and Terraform state management.
 >
@@ -817,6 +817,77 @@ output "network_mode_info" {
   description = "Network information for projects using platform or BYO networking"
 }
 ```
+
+### 5.5 Runner compute model: Self-hosted (ACA) vs. GitHub-hosted with Azure private networking
+
+> **Context.** Two architecturally distinct approaches exist for running CI/CD jobs that need private-network access to Azure resources deployed in a closed VNet. This section compares them and explains why this Landing Zone uses self-hosted runners on Azure Container Apps (ACA).
+
+#### 5.5.1 Option A — Self-hosted runner on a container platform (ACA / ACI)
+
+The project module creates an **ACA Environment** in the project's DevOps VNet (§5.4.1) and registers ephemeral **ACA Jobs** as self-hosted runners. The Platform LZ provides the shared runner container image (built and stored in the org-level ACR), the Log Analytics sink, and the container-run UAMI.
+
+| Property                           | Detail                                                                                                                                                                  |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **VCS platform support**           | GitHub Actions **and** Azure DevOps Pipelines (via the same ACA compute, different agent/runner registration)                                                           |
+| **GitHub plan requirement**        | Any plan (Free, Team, Enterprise) — self-hosted runners are available on all plans                                                                                      |
+| **Azure region availability**      | Any Azure region where ACA is available                                                                                                                                 |
+| **Runner image control**           | Full — custom Dockerfile, pre-installed tools, caching layers, pinned OS versions; images are built by org-level ACR tasks                                              |
+| **Network integration**            | ACA Environment is bound to the project's VNet at creation time (subnet delegation: `Microsoft.App/environments`); runner gets a private IP inside the project's subnet |
+| **Static / predictable egress IP** | Yes — the Platform LZ NAT Gateway (platform mode) or the enterprise spoke's NAT/firewall (BYO mode) provides stable egress IPs for SaaS allowlists                      |
+| **Compute cost model**             | Azure consumption-based (ACA vCPU-seconds + memory-seconds); no per-minute GitHub runner charges                                                                        |
+| **Management overhead**            | Platform team maintains runner images (Dockerfile, OS patches, tool updates), ACA Environment scaling, and runner registration tokens                                   |
+
+#### 5.5.2 Option B — GitHub-hosted runner with Azure private networking (APES / VNet injection)
+
+GitHub's **Azure Private Networking** feature (sometimes called APES — Actions Private Endpoint Service) lets you use GitHub-managed runner VMs whose Network Interface Card (NIC) is injected into a customer-owned Azure subnet at job start time. The runner gets a private IP in the customer VNet and is destroyed after the job completes.
+
+| Property                           | Detail                                                                                                                                                                    |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **VCS platform support**           | **GitHub Actions only** — Azure DevOps has no equivalent VNet-injection feature for Microsoft-hosted agents                                                               |
+| **GitHub plan requirement**        | **Team or Enterprise Cloud** — Free plan is not supported                                                                                                                 |
+| **Azure region availability**      | Limited — only specific Azure regions are enabled; not all regions are supported                                                                                          |
+| **Runner image control**           | Limited — GitHub-managed standard images (Ubuntu, Windows); no custom Dockerfile or pre-installed tool control                                                            |
+| **Network integration**            | Subnet delegation: `GitHub.Network/networkSettings`; GitHub injects a runner NIC at job start; NIC is removed after the job                                               |
+| **Static / predictable egress IP** | **No** — runners receive dynamic IPs from the subnet; no NAT Gateway binding (static IP is not supported by APES)                                                         |
+| **Compute cost model**             | GitHub-hosted runner minutes pricing (per-minute charges on top of the Enterprise/Team license) + standard Azure networking costs                                         |
+| **Management overhead**            | Near-zero for the runner itself (GitHub manages the VM, OS, patches); customer manages only the Azure VNet/subnet and the `GitHub.Network` resource provider registration |
+
+#### 5.5.3 Comparison and architectural decision
+
+```text
+┌──────────────────────────────┬─────────────────────────────────┬──────────────────────────────────────────┐
+│ Criterion                    │ Self-hosted (ACA)               │ GitHub-hosted + Azure private networking │
+├──────────────────────────────┼─────────────────────────────────┼──────────────────────────────────────────┤
+│ GitHub + ADO parity          │ ✅ Both (same ACA compute)      │ ❌ GitHub only — no ADO equivalent       │
+│ GitHub plan flexibility      │ ✅ Any plan                     │ ⚠️ Team or Enterprise Cloud only         │
+│ Azure region availability    │ ✅ Any ACA-supported region     │ ⚠️ Limited regions                       │
+│ Runner image customization   │ ✅ Full (custom Dockerfile)     │ ❌ GitHub-standard images only            │
+│ Static egress IP             │ ✅ NAT Gateway                  │ ❌ Dynamic IPs only                       │
+│ Operational overhead         │ ⚠️ Image builds, patching,     │ ✅ Near-zero (GitHub-managed)             │
+│                              │    scaling, token rotation      │                                          │
+│ Cost model                   │ Azure consumption (ACA)         │ GitHub minutes + Azure networking        │
+│ Subnet delegation            │ Microsoft.App/environments      │ GitHub.Network/networkSettings           │
+│ Runner lifecycle              │ Ephemeral ACA Job per run      │ Ephemeral VM + NIC per job               │
+└──────────────────────────────┴─────────────────────────────────┴──────────────────────────────────────────┘
+```
+
+**Why this LZ uses self-hosted runners on ACA (Option A):**
+
+1. **Dual VCS platform support (Goal 6 — GitHub / Azure DevOps parity).** This LZ's core design goal is to provide a unified abstraction over GitHub and Azure DevOps (§7). Azure DevOps has no VNet-injection feature for Microsoft-hosted agents — self-hosted agents are the **only** option for private-network deployments in ADO Pipelines. Choosing Option B for GitHub would force a fundamentally different runner architecture for ADO projects, breaking the unified project module contract.
+
+2. **No GitHub plan lock-in.** Self-hosted runners work with _any_ GitHub plan, including Free. APES requires Team or Enterprise Cloud. The Landing Zone should not impose a GitHub licensing constraint on every consumer.
+
+3. **Full runner image control.** Self-hosted runners use a custom Dockerfile maintained by the platform team (built and stored in the org-level ACR). This enables pre-installed Terraform versions, Azure CLI, custom tools, security hardening, and deterministic caching — critical for enterprise IaC workflows. GitHub-hosted images are managed by GitHub and cannot be customized.
+
+4. **Static egress IPs.** The Platform LZ NAT Gateway provides predictable egress IPs that can be allowlisted by SaaS providers (GitHub API, Terraform Registry, package registries, Microsoft Entra). APES runners receive dynamic IPs and do not support NAT Gateway binding.
+
+5. **Azure region flexibility.** ACA is available in all major Azure regions. APES VNet injection is limited to specific regions, which may not match the customer's Azure footprint.
+
+**When Option B (GitHub-hosted + APES) may be appropriate:**
+
+- The organization uses **only GitHub** (no Azure DevOps), is on **Team or Enterprise Cloud**, operates in a **supported Azure region**, does not need custom runner images or static egress IPs, and values **near-zero runner management overhead** over customization flexibility. In this scenario, the operational simplicity of GitHub-managed runners may outweigh the customization benefits of self-hosted ACA.
+
+> **Note for Azure DevOps.** Microsoft-hosted agents do not support VNet injection as of 2025. For Azure DevOps Pipelines with private-network requirements, **self-hosted agents** (on VMs, container instances, or ACA) are the only option. This LZ's ACA-based runner model works identically for ADO self-hosted agents, which is the primary reason for the architectural choice.
 
 ---
 
