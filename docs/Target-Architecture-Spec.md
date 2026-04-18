@@ -99,12 +99,12 @@ Every gap identified below, every goal, and every design decision in subsequent 
 **3. Three-tier VNet model** (§8.0)
 
 - **Platform LZ VNet** (org-scoped, `devops/lz`) — private endpoints for bootstrap SA/KV, NAT egress, shared DNS zones.
-- **Project DevOps VNet** (project-scoped, = Platform VNet in `platform` mode or a BYO VNet in `byo` mode) — hosts the runner ACA Environment, Layer 2 tfstate private endpoint, and DevBox pool.
-- **Application / Workload VNet** (per-environment, owned by the project team's own IaC) — where actual app workloads deploy. Peering between Project DevOps VNet and Application VNet is an enterprise hub-and-spoke concern and is **not** created by the LZ.
+- **Project DevOps network context** (project-scoped: a project-dedicated subnet slice within the shared Platform LZ VNet in `platform` mode, or a BYO VNet in `byo` mode) — hosts the runner ACA Environment, Layer 2 tfstate private endpoint, and DevBox pool.
+- **Application / Workload VNet** (per-environment, owned by the project team's own IaC) — where actual app workloads deploy. Peering between the project's DevOps network context and the Application VNet is an enterprise hub-and-spoke concern and is **not** created by the LZ.
 
 **4. Project-scoped ACA Environment for self-hosted runners** (§5.4.1)
 
-- ACA Environment is created by the **project module** and bound to a subnet of the Project DevOps VNet, because an ACA Environment is bound to exactly one VNet and therefore cannot serve BYO-VNet projects from a shared platform location.
+- ACA Environment is created by the **project module** and bound to a subnet of the project's DevOps network context, because an ACA Environment is bound to exactly one VNet and therefore cannot serve BYO-VNet projects from a shared platform location.
 - Platform LZ continues to provide the shared prerequisites: ACR, Log Analytics, container-run UAMI, container image build tasks, and private DNS zones.
 
 **5. Identity and subscription mapping** (§6.5, §5.2)
@@ -165,7 +165,8 @@ Shows the four-layer resource hierarchy and which layer owns which tfstate (Laye
 │  │  7 UAMIs  (feat-plan, dev/stg/prod│   │  7 UAMIs (same shape)           ││
 │  │           plan+apply)              │   │  ADO Project = boundary         ││
 │  │  Layer 2 Storage Account ◄── app  │   │  Layer 2 SA ◄── app tfstate     ││
-│  │  ACA Environment (project VNet)   │   │  ACA Environment (project VNet) ││
+│  │  ACA Environment (project runner  │   │  ACA Environment (project runner││
+│  │  network context)                 │   │  network context)               ││
 │  │  Subscriptions: { dev, stg, prod }│   │  Subscriptions: { dev, prod }   ││
 │  │  ┌─ REPOSITORIES ────────────────┐│   │  ┌─ REPOSITORIES ──────────────┐││
 │  │  │  repo-infra  (profile=infra)  ││   │  │  repo-infra (profile=infra) │││
@@ -194,8 +195,9 @@ Shows the three VNet tiers, who owns each, and the consistency contract a BYO pr
                                    │ (7 consistency rules — §8.0.1)
         ┌──────────────────────────┴───────────────────────────┐
         ▼                                                      ▼
-┌─ TIER 2 — Project DevOps VNet ──────────┐   ┌─ TIER 2 — Project DevOps VNet ┐
-│  Mode: platform (= Platform VNet alias) │   │  Mode: byo (project-supplied) │
+┌─ TIER 2 — Project DevOps network context ┐   ┌─ TIER 2 — Project DevOps network ┐
+│  Mode: platform (project subnet slice in │   │  context                         │
+│  shared Platform LZ VNet)                │   │  Mode: byo (project-supplied)   │
 │  • ACA Environment subnet (delegated)   │   │  • ACA Environment subnet     │
 │    └─ self-hosted runner Jobs           │   │    (delegated, BYO-validated) │
 │  • Layer 2 SA private endpoint subnet   │   │  • Layer 2 SA private endpoint│
@@ -232,12 +234,14 @@ Shows what a single project module deploys at apply time, how it consumes Platfo
 │  ┌─────────────────────────┐  ┌──────────────────────────────────────┐ │   │
 │  │ Identity (in org RG)    │  │ Layer 2 Storage Account              │ │   │
 │  │  7 UAMIs:               │  │  • app-tfstate container             │ │   │
-│  │   feat-plan             │  │  • private endpoint in project VNet  │ │   │
-│  │   dev/stg/prod plan     │  │  • DNS zone link to platform zones   │ │   │
-│  │   dev/stg/prod apply    │  └──────────────────────────────────────┘ │   │
-│  │  + OIDC fed creds       │  ┌──────────────────────────────────────┐ │   │
-│  └─────────────────────────┘  │ ACA Environment (PROJECT-SCOPED)     │ │   │
-│  ┌─────────────────────────┐  │  • bound to Project DevOps VNet      │ │   │
+│  │   feat-plan             │  │  • private endpoint in runner network│ │   │
+│  │   dev/stg/prod plan     │  │    context; DNS zone link to         │ │   │
+│  │   dev/stg/prod apply    │  │    platform zones                    │ │   │
+│  └─────────────────────────┘  └──────────────────────────────────────┘ │   │
+│  ┌─────────────────────────┐  ┌──────────────────────────────────────┐ │   │
+│  │  + OIDC fed creds       │  │ ACA Environment (PROJECT-SCOPED)     │ │   │
+│  └─────────────────────────┘  │  • bound to the project's runner     │ │   │
+│  ┌─────────────────────────┐  │    network context                   │ │   │
 │  │ Subscription role asgmt │  │  • runs Jobs from shared ACR image   │ │   │
 │  │  per env (conditional)  │  │  • logs → shared Log Analytics       │ │   │
 │  └─────────────────────────┘  └──────────────────────────────────────┘ │   │
@@ -1136,12 +1140,14 @@ Three distinct VNets participate in the end-to-end flow from code commit to depl
                                    │ (always present when enable_private_network = true)
                                    ▼
 ┌────────────────────────────────────────────────────────────────────────────┐
-│ 2) Project DevOps VNet  (project-scoped — PLATFORM or BYO)                │
+│ 2) Project DevOps network context  (project-scoped choice — PLATFORM or   │
+│                                   BYO)                                    │
 │    Purpose: where the project's CI/CD compute runs                        │
 │    Chosen by: network_mode = "platform" | "byo"                           │
 │                                                                           │
-│    Mode "platform": this == Platform LZ VNet (inherited via LZ outputs)   │
-│    Mode "byo":      this == user-provided VNet (pre-existing spoke)       │
+│    Mode "platform": project-dedicated subnet slice inside the shared      │
+│                     Platform LZ VNet (selected via LZ outputs)            │
+│    Mode "byo":      user-provided VNet (pre-existing spoke)               │
 │                                                                           │
 │    Contents (created/placed by project module):                           │
 │      • ACA Environment + runner Jobs (or ACI containers) ← Section 5.4.1  │
@@ -1167,7 +1173,7 @@ Three distinct VNets participate in the end-to-end flow from code commit to depl
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Key distinction.** This Landing Zone is responsible only for (1) Platform LZ VNet and (2) Project DevOps VNet. The Application / Workload VNet (3) is the project team's responsibility and is provisioned by the project team's own Terraform running inside the runner of layer (2). The BYO VNet variable at the project level (Section 8.4) configures layer (2) — **not** layer (3).
+**Key distinction.** This Landing Zone is responsible for (1) the Platform LZ VNet and (2) the project's DevOps network context selection/binding (shared-platform subnet slice or BYO VNet). The Application / Workload VNet (3) is the project team's responsibility and is provisioned by the project team's own Terraform running inside the runner of layer (2). The BYO VNet variable at the project level (Section 8.4) configures layer (2) — **not** layer (3).
 
 #### 8.0.1 Consistency rules between Platform LZ VNet and Project BYO VNet
 

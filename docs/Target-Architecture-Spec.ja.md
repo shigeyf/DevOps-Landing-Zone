@@ -89,24 +89,24 @@
 **1. 4 層のリソース階層 — Organization → Project → Repository → Environment**（§2）
 
 - **Organization（Platform LZ, `devops/lz`）** — 組織全体で共有されるインフラ: ブートストラップ Storage Account（Layer 1 状態）、ACR、Log Analytics、container-run UAMI、Platform VNet、Private DNS ゾーン、Dev Center、コンテナイメージビルドタスク。
-- **Project（`project_github` / `project_azuredevops`）** — チーム所有と課金分離の単位。プロジェクト固有の UAMI、OIDC 認証情報、Layer 2 状態 Storage Account、ACA Environment、Project DevOps VNet（プラットフォーム提供または BYO）、DevBox プールを所有。
+- **Project（`project_github` / `project_azuredevops`）** — チーム所有と課金分離の単位。プロジェクト固有の UAMI、OIDC 認証情報、Layer 2 状態 Storage Account、ACA Environment、Project DevOps ネットワークコンテキスト（`platform` モードでは共有 Platform LZ VNet 内のプロジェクト専用サブネット、`byo` モードでは BYO VNet）、DevBox プールを所有。
 - **Repository** — プロジェクトごとに 1 つ以上のリポジトリ。各リポジトリは CI/CD プロファイル（例: `terraform-env`、`container-image`）に従う。
 - **Environment** — GitHub/ADO 環境と Azure サブスクリプション + plan/apply UAMI ペアとの 1:1 対応。環境は宣言的で、{features, development, staging, production} のサブセットを許可。
 
 **2. 2 層状態管理**（§3.2）
 
 - **Layer 1 — プラットフォーム状態**（`_bootstrap` で作成される単一 Storage Account）: bootstrap、Platform LZ、プロジェクトプロビジョニング（`project_github` / `project_azuredevops`）の tfstate を保存。
-- **Layer 2 — プロジェクトごとのアプリケーション状態**（プロジェクトプロビジョニング時に作成されるプロジェクトごとの Storage Account）: プロジェクトチーム自身のアプリ IaC（ワークロード VNet、AKS、アプリリソース等）の tfstate を保存。Layer 2 はプロジェクトが完全所有し、Project DevOps VNet からプライベートエンドポイント経由で到達。
+- **Layer 2 — プロジェクトごとのアプリケーション状態**（プロジェクトプロビジョニング時に作成されるプロジェクトごとの Storage Account）: プロジェクトチーム自身のアプリ IaC（ワークロード VNet、AKS、アプリリソース等）の tfstate を保存。Layer 2 はプロジェクトが完全所有し、Project DevOps ネットワークコンテキストからプライベートエンドポイント経由で到達。
 
 **3. 3 層 VNet モデル**（§8.0）
 
 - **Platform LZ VNet**（組織スコープ、`devops/lz`）— ブートストラップ SA/KV のプライベートエンドポイント、NAT エグレス、共有 DNS ゾーン。
-- **Project DevOps VNet**（プロジェクトスコープ、`platform` モードでは Platform VNet、`byo` モードでは BYO VNet）— ランナー ACA Environment、Layer 2 tfstate プライベートエンドポイント、DevBox プールをホスト。
-- **Application / Workload VNet**（環境ごと、プロジェクトチーム自身の IaC が所有）— 実際のアプリワークロードのデプロイ先。Project DevOps VNet と Application VNet 間のピアリングはエンタープライズ hub-and-spoke の関心事であり、**LZ では作成しない**。
+- **Project DevOps ネットワークコンテキスト**（プロジェクトスコープ: `platform` モードでは共有 Platform LZ VNet 内のプロジェクト専用サブネット、`byo` モードでは BYO VNet）— ランナー ACA Environment、Layer 2 tfstate プライベートエンドポイント、DevBox プールをホスト。
+- **Application / Workload VNet**（環境ごと、プロジェクトチーム自身の IaC が所有）— 実際のアプリワークロードのデプロイ先。プロジェクトの DevOps ネットワークコンテキストと Application VNet 間のピアリングはエンタープライズ hub-and-spoke の関心事であり、**LZ では作成しない**。
 
 **4. セルフホステッドランナー向けのプロジェクトスコープ ACA Environment**（§5.4.1）
 
-- ACA Environment は**プロジェクトモジュール**により作成され、Project DevOps VNet のサブネットにバインドされる。ACA Environment は厳密に 1 つの VNet にバインドされるため、BYO VNet プロジェクトを共有プラットフォーム側から提供することは構造上不可能。
+- ACA Environment は**プロジェクトモジュール**により作成され、プロジェクトの DevOps ネットワークコンテキストのサブネットにバインドされる。ACA Environment は厳密に 1 つの VNet にバインドされるため、BYO VNet プロジェクトを共有プラットフォーム側から提供することは構造上不可能。
 - Platform LZ は引き続き共有前提リソース（ACR、Log Analytics、container-run UAMI、コンテナイメージビルドタスク、Private DNS ゾーン）を提供。
 
 **5. ID とサブスクリプションマッピング**（§6.5、§5.2）
@@ -167,7 +167,8 @@
 │  │  7 UAMIs  (feat-plan, dev/stg/prod│   │  7 UAMIs (same shape)           ││
 │  │           plan+apply)              │   │  ADO Project = boundary         ││
 │  │  Layer 2 Storage Account ◄── app  │   │  Layer 2 SA ◄── app tfstate     ││
-│  │  ACA Environment (project VNet)   │   │  ACA Environment (project VNet) ││
+│  │  ACA Environment (project runner  │   │  ACA Environment (project runner││
+│  │  network context)                 │   │  network context)               ││
 │  │  Subscriptions: { dev, stg, prod }│   │  Subscriptions: { dev, prod }   ││
 │  │  ┌─ REPOSITORIES ────────────────┐│   │  ┌─ REPOSITORIES ──────────────┐││
 │  │  │  repo-infra  (profile=infra)  ││   │  │  repo-infra (profile=infra) │││
@@ -196,8 +197,9 @@
                                    │ (7 つの整合性ルール — §8.0.1)
         ┌──────────────────────────┴───────────────────────────┐
         ▼                                                      ▼
-┌─ TIER 2 — Project DevOps VNet ──────────┐   ┌─ TIER 2 — Project DevOps VNet ┐
-│  Mode: platform (= Platform VNet alias) │   │  Mode: byo (project-supplied) │
+┌─ TIER 2 — Project DevOps network context ┐   ┌─ TIER 2 — Project DevOps network ┐
+│  Mode: platform (project subnet slice in │   │  context                         │
+│  shared Platform LZ VNet)                │   │  Mode: byo (project-supplied)   │
 │  • ACA Environment subnet (delegated)   │   │  • ACA Environment subnet     │
 │    └─ self-hosted runner Jobs           │   │    (delegated, BYO-validated) │
 │  • Layer 2 SA private endpoint subnet   │   │  • Layer 2 SA private endpoint│
@@ -234,12 +236,14 @@
 │  ┌─────────────────────────┐  ┌──────────────────────────────────────┐ │   │
 │  │ Identity (org RG 内)    │  │ Layer 2 Storage Account              │ │   │
 │  │  7 UAMIs:               │  │  • app-tfstate container             │ │   │
-│  │   feat-plan             │  │  • project VNet 内の private endpoint│ │   │
-│  │   dev/stg/prod plan     │  │  • platform DNS zone へのリンク      │ │   │
-│  │   dev/stg/prod apply    │  └──────────────────────────────────────┘ │   │
-│  │  + OIDC fed creds       │  ┌──────────────────────────────────────┐ │   │
-│  └─────────────────────────┘  │ ACA Environment (プロジェクトスコープ)│ │   │
-│  ┌─────────────────────────┐  │  • Project DevOps VNet にバインド    │ │   │
+│  │   feat-plan             │  │  • ランナーネットワークコンテキスト内 │ │   │
+│  │   dev/stg/prod plan     │  │    の private endpoint               │ │   │
+│  │   dev/stg/prod apply    │  │  • platform DNS zone へのリンク      │ │   │
+│  └─────────────────────────┘  └──────────────────────────────────────┘ │   │
+│  ┌─────────────────────────┐  ┌──────────────────────────────────────┐ │   │
+│  │  + OIDC fed creds       │  │ ACA Environment (プロジェクトスコープ)│ │   │
+│  └─────────────────────────┘  │  • プロジェクトのランナーネットワーク │ │   │
+│  ┌─────────────────────────┐  │    コンテキストにバインド            │ │   │
 │  │ サブスクリプション RBAC │  │  • 共有 ACR イメージから Jobs を実行 │ │   │
 │  │  env 別（条件付き）     │  │  • ログ → 共有 Log Analytics         │ │   │
 │  └─────────────────────────┘  └──────────────────────────────────────┘ │   │
@@ -1139,12 +1143,14 @@ variable "use_separate_repo_for_pipeline_templates" { ... }
                                    │ （enable_private_network = true の場合に常時存在）
                                    ▼
 ┌────────────────────────────────────────────────────────────────────────────┐
-│ 2) Project DevOps VNet  （プロジェクトスコープ — PLATFORM または BYO）    │
+│ 2) Project DevOps ネットワークコンテキスト  （プロジェクトスコープの選択  │
+│                                           — PLATFORM または BYO）         │
 │    目的: プロジェクトの CI/CD コンピュートが動作する場所                   │
 │    選択: network_mode = "platform" | "byo"                                │
 │                                                                           │
-│    "platform" モード: これは Platform LZ VNet と同一（LZ 出力経由で継承） │
-│    "byo" モード:      これはユーザー提供の VNet（既存のスポーク）         │
+│    "platform" モード: 共有 Platform LZ VNet 内のプロジェクト専用サブネット│
+│                      （LZ 出力で選択）                                    │
+│    "byo" モード:      ユーザー提供の VNet（既存のスポーク）               │
 │                                                                           │
 │    格納物（プロジェクトモジュールが作成・配置）:                           │
 │      • ACA Environment + ランナー Job（または ACI） ← §5.4.1              │
@@ -1170,7 +1176,7 @@ variable "use_separate_repo_for_pipeline_templates" { ... }
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**重要な区別。** 本ランディングゾーンは (1) Platform LZ VNet と (2) Project DevOps VNet のみを管理する。Application / Workload VNet (3) はプロジェクトチームの責務であり、層 (2) のランナー内で実行されるプロジェクトチーム自身の Terraform によってプロビジョニングされる。プロジェクトレベルの BYO VNet 変数（セクション 8.4）は層 (2) を設定するものであり、層 (3) ではない。
+**重要な区別。** 本ランディングゾーンは (1) Platform LZ VNet と (2) プロジェクトの DevOps ネットワークコンテキストの選択/バインド（共有プラットフォームサブネットまたは BYO VNet）を管理する。Application / Workload VNet (3) はプロジェクトチームの責務であり、層 (2) のランナー内で実行されるプロジェクトチーム自身の Terraform によってプロビジョニングされる。プロジェクトレベルの BYO VNet 変数（セクション 8.4）は層 (2) を設定するものであり、層 (3) ではない。
 
 #### 8.0.1 Platform LZ VNet と Project BYO VNet の一貫性ルール
 
@@ -1188,7 +1194,7 @@ variable "use_separate_repo_for_pipeline_templates" { ... }
 
 #### 8.0.2 Application / Workload VNet との関係
 
-ランナーのデプロイ動作（たとえば dev サブスクリプション内にプライベートエンドポイント付きの App Service を作成するなど）は、ランナーの VNet（層 2）からターゲットリソースの VNet（層 3）へのネットワーク到達性を必要とする。本ランディングゾーンは Project DevOps VNet と Application VNet との間のピアリングを**作成しない**。企業のネットワークパターン（典型的にはハブ & スポークで中央ハブを介するもの）がこれを提供することが期待される。BYO VNet は通常、そのトポロジ内の既存スポークであり、ランナーに必要な到達性を自然に与える。
+ランナーのデプロイ動作（たとえば dev サブスクリプション内にプライベートエンドポイント付きの App Service を作成するなど）は、ランナーのネットワークコンテキスト（層 2）からターゲットリソースの VNet（層 3）へのネットワーク到達性を必要とする。本ランディングゾーンはプロジェクトの DevOps ネットワークコンテキストと Application VNet との間のピアリングを**作成しない**。企業のネットワークパターン（典型的にはハブ & スポークで中央ハブを介するもの）がこれを提供することが期待される。BYO VNet は通常、そのトポロジ内の既存スポークであり、ランナーに必要な到達性を自然に与える。
 
 `network_mode = "platform"` の場合、Platform LZ VNet が DevOps VNet を兼ねる。同じピアリング / ハブ & スポーク要件が適用される: ランナーがターゲットサブスクリプションのプライベートリンクリソースを管理するためには、Platform LZ VNet が各ターゲットサブスクリプションの Application VNet からピアリング（または他の手段で到達可能）されている必要がある。
 
