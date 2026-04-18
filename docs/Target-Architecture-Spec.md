@@ -1,6 +1,6 @@
 # Target Architecture Specification (DRAFT)
 
-> **Status:** Draft v0.5.2 — added an "Architecture goals (target at a glance)" subsection at the end of Section 1 summarizing the ten target-architecture pillars (hierarchy, two-layer state, three-tier VNet, project-scoped ACA Environment, identity model, unified GitHub/ADO abstraction, governance, GitOps onboarding, BYO VNet consistency rules, `project_azuredevops` parity) so readers see the destination before as-is / gaps / to-be details
+> **Status:** Draft v0.5.3 — added three target-architecture diagrams at the end of Section 1 (Org-Project-Repo-Env hierarchy + two-layer state, three-tier VNet model + BYO consistency, project module composition) so readers can visualize the destination before reading as-is / gaps / to-be details. v0.5.2 added an "Architecture goals (target at a glance)" subsection summarizing the ten target-architecture pillars.
 >
 > **Main Purpose:** Define and refine the correct **Organization → Project → Repository → Environment** (Org-Project-Repo-Env) resource hierarchy for the DevOps Landing Zone. Every gap, goal, and design decision in this document exists to achieve a clear, consistent mapping of this hierarchy to Azure resources, VCS platforms (GitHub / Azure DevOps), and Terraform state management.
 >
@@ -134,6 +134,122 @@ Every gap identified below, every goal, and every design decision in subsequent 
 - The Azure DevOps root module implements the same Project → Repo → Environment contract, the same 7-UAMI identity model, the same Layer 2 state storage, and the same ACA Environment binding as `project_github`.
 
 > **Reading the rest of the document.** With these ten goals in mind: Sections 2–3 define hierarchy and state layering; Section 4 gives the target module layout; Section 5 reviews Platform LZ resource scoping (including §5.4.1's project-scoped ACA Environment); Sections 6–7 define the Project and the GitHub/ADO abstraction; Section 8 defines VNet architecture and BYO VNet; Section 9 defines governance; Section 10 defines GitOps onboarding; Sections 11–14 cover naming, migration, decisions, and remaining follow-ups.
+
+### Architecture diagrams (target at a glance)
+
+> **Purpose of this subsection.** The following three diagrams visualize the architecture goals above so readers can see the destination at a glance before reading the as-is / gaps / to-be discussion. They depict the **target** state, not the current code — current-vs-target deltas are tracked in §5, §8, and §14.
+
+#### Diagram 1 — Org-Project-Repo-Env hierarchy + two-layer state ownership (Goals 1, 2, 5, 6, 7)
+
+Shows the four-layer resource hierarchy and which layer owns which tfstate (Layer 1 platform vs. Layer 2 per-project), plus the platform-agnostic Project abstraction over GitHub and Azure DevOps.
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ ORGANIZATION  (GitHub Org │ Azure DevOps Org)                              │
+│                                                                             │
+│  ┌─ Bootstrap (infra/_bootstrap) ────────────────────────────────────────┐ │
+│  │  Layer 1 Storage Account  ◄── tfstate: bootstrap, LZ, project_*       │ │
+│  │  Bootstrap Key Vault       (VCS PATs)                                 │ │
+│  └───────────────────────────────────────────────────────────────────────┘ │
+│                                  │                                          │
+│  ┌─ Platform LZ (devops/lz) ─────▼───────────────────────────────────────┐ │
+│  │  ACR  •  Log Analytics  •  container-run UAMI                         │ │
+│  │  Identity RG (org container for project UAMIs)                        │ │
+│  │  Platform VNet  •  Private DNS zones  •  NAT  •  Dev Center           │ │
+│  │  Org-level governance (rulesets / runner groups / agent pools — §9)   │ │
+│  └───────────────────────────────────────────────────────────────────────┘ │
+│                                  │ remote_state outputs                     │
+│        ┌─────────────────────────┴────────────────────────┐                 │
+│        ▼                                                  ▼                 │
+│  ┌─ PROJECT A (project_github) ──────┐   ┌─ PROJECT B (project_azuredevops)┐│
+│  │  7 UAMIs  (feat-plan, dev/stg/prod│   │  7 UAMIs (same shape)           ││
+│  │           plan+apply)              │   │  ADO Project = boundary         ││
+│  │  Layer 2 Storage Account ◄── app  │   │  Layer 2 SA ◄── app tfstate     ││
+│  │  ACA Environment (project VNet)   │   │  ACA Environment (project VNet) ││
+│  │  Subscriptions: { dev, stg, prod }│   │  Subscriptions: { dev, prod }   ││
+│  │  ┌─ REPOSITORIES ────────────────┐│   │  ┌─ REPOSITORIES ──────────────┐││
+│  │  │  repo-infra  (profile=infra)  ││   │  │  repo-infra (profile=infra) │││
+│  │  │  repo-app    (profile=app)    ││   │  └─────────────────────────────┘││
+│  │  └───────────────────────────────┘│   │  ┌─ ENVIRONMENTS ──────────────┐││
+│  │  ┌─ ENVIRONMENTS ────────────────┐│   │  │  dev → sub-dev  (UAMIs)     │││
+│  │  │  features → sub-feat (UAMI)   ││   │  │  prod → sub-prod (UAMIs)    │││
+│  │  │  dev / staging / prod → subs  ││   │  └─────────────────────────────┘││
+│  │  └───────────────────────────────┘│   └─────────────────────────────────┘│
+│  └────────────────────────────────────┘                                     │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Diagram 2 — Three-tier VNet model + BYO consistency rules (Goals 3, 9)
+
+Shows the three VNet tiers, who owns each, and the consistency contract a BYO project VNet must satisfy with respect to the Platform LZ VNet.
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ TIER 1 — Platform LZ VNet  (org-scoped, devops/lz)                         │
+│  • Private endpoints: bootstrap SA, bootstrap KV                           │
+│  • Private DNS zones (linked to project VNets)                             │
+│  • NAT egress                                                              │
+└──────────────────────────────────┬──────────────────────────────────────────┘
+                                   │ peering + DNS-zone link
+                                   │ (7 consistency rules — §8.0.1)
+        ┌──────────────────────────┴───────────────────────────┐
+        ▼                                                      ▼
+┌─ TIER 2 — Project DevOps VNet ──────────┐   ┌─ TIER 2 — Project DevOps VNet ┐
+│  Mode: platform (= Platform VNet alias) │   │  Mode: byo (project-supplied) │
+│  • ACA Environment subnet (delegated)   │   │  • ACA Environment subnet     │
+│    └─ self-hosted runner Jobs           │   │    (delegated, BYO-validated) │
+│  • Layer 2 SA private endpoint subnet   │   │  • Layer 2 SA private endpoint│
+│  • DevBox network connection            │   │  • DevBox network connection  │
+└────────────────────┬────────────────────┘   └─────────────┬─────────────────┘
+                     │ hub-and-spoke peering (NOT created by LZ — §8.0.2)
+                     ▼                                      ▼
+┌─ TIER 3 — Application / Workload VNet (per-environment, project team's IaC)─┐
+│  • Owned and deployed by the project's own Layer 2 Terraform                │
+│  • Hosts AKS / App Service / VMs / databases / app private endpoints        │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Diagram 3 — Project module composition (Goals 4, 5, 8, 10)
+
+Shows what a single project module deploys at apply time, how it consumes Platform LZ outputs, and how the GitOps onboarding repository drives provisioning. This is the project-scoped view of the project-scoped ACA Environment goal (§5.4.1).
+
+```text
+                ┌──────────────────────────────────┐
+                │ GitOps onboarding repo (§10)     │
+                │  issue → YAML PR → CI apply      │
+                └───────────────┬──────────────────┘
+                                │ project YAML
+                                ▼
+┌── PROJECT MODULE  (project_github | project_azuredevops) ──────────────────┐
+│                                                                             │
+│  Inputs ─────────────────────────────────────────────────────────────────┐  │
+│  • remote_state(devops/lz) → ACR id, Log Analytics id, container-run     │  │
+│    UAMI id, Identity RG id, Platform VNet/subnet ids, DNS zone ids       │  │
+│  • project YAML: name, repos[], subscriptions{}, network_mode, byo_vnet  │  │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  Project-scoped Azure resources ────────────────────────────────────────┐   │
+│  ┌─────────────────────────┐  ┌──────────────────────────────────────┐ │   │
+│  │ Identity (in org RG)    │  │ Layer 2 Storage Account              │ │   │
+│  │  7 UAMIs:               │  │  • app-tfstate container             │ │   │
+│  │   feat-plan             │  │  • private endpoint in project VNet  │ │   │
+│  │   dev/stg/prod plan     │  │  • DNS zone link to platform zones   │ │   │
+│  │   dev/stg/prod apply    │  └──────────────────────────────────────┘ │   │
+│  │  + OIDC fed creds       │  ┌──────────────────────────────────────┐ │   │
+│  └─────────────────────────┘  │ ACA Environment (PROJECT-SCOPED)     │ │   │
+│  ┌─────────────────────────┐  │  • bound to Project DevOps VNet      │ │   │
+│  │ Subscription role asgmt │  │  • runs Jobs from shared ACR image   │ │   │
+│  │  per env (conditional)  │  │  • logs → shared Log Analytics       │ │   │
+│  └─────────────────────────┘  └──────────────────────────────────────┘ │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  VCS-scoped resources (per platform) ───────────────────────────────────┐   │
+│  • Repositories (with profile-driven workflow files)                    │   │
+│  • Environments × {features, dev, staging, prod} ↔ subscriptions        │   │
+│  • OIDC trust to UAMIs    • Per-project runner / agent group reference  │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 

@@ -2,7 +2,7 @@
 
 [English](./Target-Architecture-Spec.md) | [日本語](./Target-Architecture-Spec.ja.md)
 
-> **ステータス:** Draft v0.5.2 — セクション 1 の末尾に「アーキテクチャゴール（ターゲット全体像）」サブセクションを追加。ターゲットアーキテクチャの 10 本柱（階層、2 層状態、3 層 VNet、プロジェクトスコープ ACA Environment、ID モデル、GitHub/ADO 統一抽象化、ガバナンス、GitOps オンボーディング、BYO VNet 整合性ルール、`project_azuredevops` パリティ）を要約し、as-is / ギャップ / to-be の詳細に入る前に到達点を示すようにした
+> **ステータス:** Draft v0.5.3 — セクション 1 の末尾に 3 つのターゲットアーキテクチャ図（Org-Project-Repo-Env 階層 + 2 層状態、3 層 VNet モデル + BYO 整合性、プロジェクトモジュール構成）を追加し、as-is / ギャップ / to-be の詳細に入る前に到達点を可視化できるようにした。v0.5.2 では「アーキテクチャゴール（ターゲット全体像）」サブセクションを追加し、ターゲットアーキテクチャの 10 本柱を要約した。
 >
 > **主目的:** DevOps Landing Zone の正しい **Organization → Project → Repository → Environment（Org-Project-Repo-Env）** リソース階層を定義し精緻化する。本ドキュメントのすべてのギャップ、目標、設計決定は、この階層を Azure リソース、VCS プラットフォーム（GitHub / Azure DevOps）、および Terraform 状態管理に正しくマッピングするために存在する。
 >
@@ -136,6 +136,122 @@
 - Azure DevOps ルートモジュールは、`project_github` と同じ Project → Repo → Environment 契約、同じ 7-UAMI ID モデル、同じ Layer 2 状態ストレージ、同じ ACA Environment バインドを実装する。
 
 > **ドキュメントの残りの読み方。** これら 10 のゴールを念頭に: §2–§3 で階層と状態レイヤを定義; §4 でターゲットのモジュール構成; §5 で Platform LZ リソーススコープ（§5.4.1 のプロジェクトスコープ ACA Environment を含む）をレビュー; §6–§7 で Project と GitHub/ADO 抽象化を定義; §8 で VNet アーキテクチャと BYO VNet; §9 でガバナンス; §10 で GitOps オンボーディング; §11–§14 で命名、移行、意思決定、残課題。
+
+### アーキテクチャ図（ターゲット全体像）
+
+> **このサブセクションの目的。** 以下の 3 つの図は、上記のアーキテクチャゴールを可視化し、as-is / ギャップ / to-be の議論に入る前に行き先を一目で示すためのものである。これらは**ターゲット**状態を示しており、現在のコードではない — 現状とターゲットの差分は §5、§8、§14 で追跡される。
+
+#### 図 1 — Org-Project-Repo-Env 階層 + 2 層状態管理（ゴール 1, 2, 5, 6, 7）
+
+4 層リソース階層と、どのレイヤがどの tfstate を所有するか（Layer 1 プラットフォーム vs. Layer 2 プロジェクト別）、および GitHub と Azure DevOps を横断するプラットフォーム非依存の Project 抽象を示す。
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ ORGANIZATION  (GitHub Org │ Azure DevOps Org)                              │
+│                                                                             │
+│  ┌─ Bootstrap (infra/_bootstrap) ────────────────────────────────────────┐ │
+│  │  Layer 1 Storage Account  ◄── tfstate: bootstrap, LZ, project_*       │ │
+│  │  Bootstrap Key Vault       (VCS PATs)                                 │ │
+│  └───────────────────────────────────────────────────────────────────────┘ │
+│                                  │                                          │
+│  ┌─ Platform LZ (devops/lz) ─────▼───────────────────────────────────────┐ │
+│  │  ACR  •  Log Analytics  •  container-run UAMI                         │ │
+│  │  Identity RG (org container for project UAMIs)                        │ │
+│  │  Platform VNet  •  Private DNS zones  •  NAT  •  Dev Center           │ │
+│  │  Org-level governance (rulesets / runner groups / agent pools — §9)   │ │
+│  └───────────────────────────────────────────────────────────────────────┘ │
+│                                  │ remote_state outputs                     │
+│        ┌─────────────────────────┴────────────────────────┐                 │
+│        ▼                                                  ▼                 │
+│  ┌─ PROJECT A (project_github) ──────┐   ┌─ PROJECT B (project_azuredevops)┐│
+│  │  7 UAMIs  (feat-plan, dev/stg/prod│   │  7 UAMIs (same shape)           ││
+│  │           plan+apply)              │   │  ADO Project = boundary         ││
+│  │  Layer 2 Storage Account ◄── app  │   │  Layer 2 SA ◄── app tfstate     ││
+│  │  ACA Environment (project VNet)   │   │  ACA Environment (project VNet) ││
+│  │  Subscriptions: { dev, stg, prod }│   │  Subscriptions: { dev, prod }   ││
+│  │  ┌─ REPOSITORIES ────────────────┐│   │  ┌─ REPOSITORIES ──────────────┐││
+│  │  │  repo-infra  (profile=infra)  ││   │  │  repo-infra (profile=infra) │││
+│  │  │  repo-app    (profile=app)    ││   │  └─────────────────────────────┘││
+│  │  └───────────────────────────────┘│   │  ┌─ ENVIRONMENTS ──────────────┐││
+│  │  ┌─ ENVIRONMENTS ────────────────┐│   │  │  dev → sub-dev  (UAMIs)     │││
+│  │  │  features → sub-feat (UAMI)   ││   │  │  prod → sub-prod (UAMIs)    │││
+│  │  │  dev / staging / prod → subs  ││   │  └─────────────────────────────┘││
+│  │  └───────────────────────────────┘│   └─────────────────────────────────┘│
+│  └────────────────────────────────────┘                                     │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 図 2 — 3 層 VNet モデル + BYO 整合性ルール（ゴール 3, 9）
+
+3 つの VNet 層、それぞれの所有者、および BYO プロジェクト VNet が Platform LZ VNet に対して満たすべき整合性契約を示す。
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ TIER 1 — Platform LZ VNet  (組織スコープ, devops/lz)                        │
+│  • Private endpoints: bootstrap SA, bootstrap KV                           │
+│  • Private DNS zones (linked to project VNets)                             │
+│  • NAT egress                                                              │
+└──────────────────────────────────┬──────────────────────────────────────────┘
+                                   │ peering + DNS-zone link
+                                   │ (7 つの整合性ルール — §8.0.1)
+        ┌──────────────────────────┴───────────────────────────┐
+        ▼                                                      ▼
+┌─ TIER 2 — Project DevOps VNet ──────────┐   ┌─ TIER 2 — Project DevOps VNet ┐
+│  Mode: platform (= Platform VNet alias) │   │  Mode: byo (project-supplied) │
+│  • ACA Environment subnet (delegated)   │   │  • ACA Environment subnet     │
+│    └─ self-hosted runner Jobs           │   │    (delegated, BYO-validated) │
+│  • Layer 2 SA private endpoint subnet   │   │  • Layer 2 SA private endpoint│
+│  • DevBox network connection            │   │  • DevBox network connection  │
+└────────────────────┬────────────────────┘   └─────────────┬─────────────────┘
+                     │ hub-and-spoke ピアリング (LZ では作成しない — §8.0.2)
+                     ▼                                      ▼
+┌─ TIER 3 — Application / Workload VNet (環境ごと、プロジェクトの IaC が所有)─┐
+│  • プロジェクト独自の Layer 2 Terraform で所有・デプロイされる              │
+│  • AKS / App Service / VM / DB / アプリの private endpoint をホスト         │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 図 3 — プロジェクトモジュール構成（ゴール 4, 5, 8, 10）
+
+単一のプロジェクトモジュールが apply 時にデプロイするリソース、Platform LZ 出力の消費方法、および GitOps オンボーディングリポジトリがプロビジョニングを駆動する流れを示す。これは、プロジェクトスコープ ACA Environment ゴール（§5.4.1）のプロジェクト視点である。
+
+```text
+                ┌──────────────────────────────────┐
+                │ GitOps オンボーディングリポ (§10) │
+                │  issue → YAML PR → CI apply      │
+                └───────────────┬──────────────────┘
+                                │ project YAML
+                                ▼
+┌── PROJECT MODULE  (project_github | project_azuredevops) ──────────────────┐
+│                                                                             │
+│  Inputs ─────────────────────────────────────────────────────────────────┐  │
+│  • remote_state(devops/lz) → ACR id, Log Analytics id, container-run     │  │
+│    UAMI id, Identity RG id, Platform VNet/subnet ids, DNS zone ids       │  │
+│  • project YAML: name, repos[], subscriptions{}, network_mode, byo_vnet  │  │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  プロジェクトスコープの Azure リソース ─────────────────────────────────┐   │
+│  ┌─────────────────────────┐  ┌──────────────────────────────────────┐ │   │
+│  │ Identity (org RG 内)    │  │ Layer 2 Storage Account              │ │   │
+│  │  7 UAMIs:               │  │  • app-tfstate container             │ │   │
+│  │   feat-plan             │  │  • project VNet 内の private endpoint│ │   │
+│  │   dev/stg/prod plan     │  │  • platform DNS zone へのリンク      │ │   │
+│  │   dev/stg/prod apply    │  └──────────────────────────────────────┘ │   │
+│  │  + OIDC fed creds       │  ┌──────────────────────────────────────┐ │   │
+│  └─────────────────────────┘  │ ACA Environment (プロジェクトスコープ)│ │   │
+│  ┌─────────────────────────┐  │  • Project DevOps VNet にバインド    │ │   │
+│  │ サブスクリプション RBAC │  │  • 共有 ACR イメージから Jobs を実行 │ │   │
+│  │  env 別（条件付き）     │  │  • ログ → 共有 Log Analytics         │ │   │
+│  └─────────────────────────┘  └──────────────────────────────────────┘ │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  VCS スコープのリソース（プラットフォーム別）──────────────────────────┐   │
+│  • Repositories（profile 駆動のワークフローファイル付き）               │   │
+│  • Environments × {features, dev, staging, prod} ↔ サブスクリプション   │   │
+│  • UAMI への OIDC 信頼  • プロジェクト別 runner / agent group 参照      │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
