@@ -43,11 +43,6 @@ vnet_private_endpoint_subnet_address_prefix = "10.10.0.0/21"
 vnet_gateway_subnet_address_prefix = "10.10.100.0/26"
 
 # ACA subnet address prefix for Private Virtual Network
-# Note: The LZ-level ACA subnet definition is retained so the VNet
-# address-plan remains stable.  New projects create their own
-# project-dedicated ACA subnets at the project level (see
-# project_github/terraform.tfvars.sample, network_mode /
-# platform_aca_subnet_address_prefix).
 vnet_container_app_subnet_address_prefix = "10.10.20.0/27"
 
 # ACI subnet address prefix for Private Virtual Network

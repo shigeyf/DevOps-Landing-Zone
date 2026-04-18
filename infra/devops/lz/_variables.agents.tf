@@ -1,6 +1,7 @@
 // _variables.agents.tf
 
-# ACA Environment configuration variables (zone redundancy, workload
-# profiles, etc.) have been moved to the project level, since the ACA
-# Environment is now a project-scoped resource (see §5.4.1 / §14#6 in
-# the Target Architecture Spec).
+variable "enable_agents_environment_zone_redundancy" {
+  description = "Enable zone redundancy for self-hosted agents environment. This is only applicable if agents are deployed on a Container App Environment."
+  type        = bool
+  default     = true
+}

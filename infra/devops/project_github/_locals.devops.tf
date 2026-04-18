@@ -39,18 +39,12 @@ locals {
 
 // Agent Resources for Self-hosted GitHub Runners
 locals {
-  acr_login_server                  = local._devops_outputs.devops_agents.acr_login_server
-  container_specs                   = local._devops_outputs.container_specs
-  container_run_managed_identity_id = local._devops_outputs.devops_agents.container_run_uami_id
-  log_analytics_workspace_id        = local._devops_outputs.devops_agents.log_analytics_workspace_id
-  container_instance_subnet_id      = local._devops_outputs.devops_network.aci_subnet_id
-
-  // ACA Environment is now project-scoped (see agents.container_app_env.tf)
-  container_app_environment_id = (
-    local.create_aca_env
-    ? module.aca[0].output.container_app_environment_id
-    : null
-  )
+  acr_login_server                    = local._devops_outputs.devops_agents.acr_login_server
+  container_specs                     = local._devops_outputs.container_specs
+  container_run_managed_identity_id   = local._devops_outputs.devops_agents.container_run_uami_id
+  container_app_environment_id        = local._devops_outputs.devops_agents.container_app_environment_id
+  container_app_workload_profile_name = local._devops_outputs.devops_agents.container_app_workload_profile_name
+  container_instance_subnet_id        = local._devops_outputs.devops_network.aci_subnet_id
 }
 
 // DevBox Resources
