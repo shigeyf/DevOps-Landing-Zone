@@ -45,3 +45,20 @@ use_self_hosted_runners  = true
 # Compute type of GitHub Self-Hosted Runners
 # Options: "aca", "aci"
 self_hosted_runners_type = "aca"
+
+# Runner network mode: "platform" (default) or "byo"
+# "platform" — creates a project-dedicated ACA subnet inside the shared
+#              Platform LZ VNet.
+# "byo"      — uses an externally-provided VNet and subnet.
+network_mode = "platform"
+
+# (platform mode) Address prefix for the project's ACA runner subnet
+# inside the Platform LZ VNet.  Must be a /23 or larger.
+platform_aca_subnet_address_prefix = "10.10.32.0/23"
+
+# (byo mode) Resource ID of the pre-existing ACA-delegated subnet in
+# the BYO VNet.  Uncomment and set when network_mode = "byo".
+#byo_aca_subnet_id = "/subscriptions/<sub-id>/resourceGroups/<rg>/providers/Microsoft.Network/virtualNetworks/<vnet>/subnets/<subnet>"
+
+# Enable zone redundancy for the project's ACA Environment
+#enable_aca_zone_redundancy = true

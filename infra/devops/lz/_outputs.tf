@@ -2,16 +2,15 @@
 
 output "devops_agents" {
   value = {
-    resource_group_name                 = length(azurerm_resource_group.agents) > 0 ? azurerm_resource_group.agents[0].name : null
-    container_run_uami_id               = length(azurerm_user_assigned_identity.container_run) > 0 ? azurerm_user_assigned_identity.container_run[0].id : null
-    container_run_uami_principal_id     = length(azurerm_user_assigned_identity.container_run) > 0 ? azurerm_user_assigned_identity.container_run[0].principal_id : null
-    acr_id                              = length(module.acr) > 0 ? module.acr[0].output.acr_id : null
-    acr_login_server                    = length(module.acr) > 0 ? module.acr[0].output.acr_login_server : null
-    log_analytics_id                    = length(azurerm_log_analytics_workspace.this) > 0 ? azurerm_log_analytics_workspace.this[0].id : null
-    container_app_environment_id        = length(module.aca) > 0 ? module.aca[0].output.container_app_environment_id : null
-    container_app_workload_profile_name = length(module.aca) > 0 ? local.container_app_workload_profile_name : null
+    resource_group_name             = length(azurerm_resource_group.agents) > 0 ? azurerm_resource_group.agents[0].name : null
+    container_run_uami_id           = length(azurerm_user_assigned_identity.container_run) > 0 ? azurerm_user_assigned_identity.container_run[0].id : null
+    container_run_uami_principal_id = length(azurerm_user_assigned_identity.container_run) > 0 ? azurerm_user_assigned_identity.container_run[0].principal_id : null
+    container_run_uami_client_id    = length(azurerm_user_assigned_identity.container_run) > 0 ? azurerm_user_assigned_identity.container_run[0].client_id : null
+    acr_id                          = length(module.acr) > 0 ? module.acr[0].output.acr_id : null
+    acr_login_server                = length(module.acr) > 0 ? module.acr[0].output.acr_login_server : null
+    log_analytics_workspace_id      = length(azurerm_log_analytics_workspace.this) > 0 ? azurerm_log_analytics_workspace.this[0].id : null
   }
-  description = "Agents resources"
+  description = "Shared agents infrastructure — ACR, Log Analytics, container-run UAMI. The ACA Environment is project-scoped (see project module)."
 }
 
 output "devops_identity" {
@@ -29,8 +28,10 @@ output "devops_network" {
     private_endpoints   = { for index, pe in azurerm_private_endpoint.bootstrap : index => pe.id }
     aca_subnet_id       = local.container_app_subnet_id
     aci_subnet_id       = local.container_instance_subnet_id
+    vnet_id             = length(module.vnet) > 0 ? module.vnet[0].output.vnet_id : null
+    vnet_name           = length(module.vnet) > 0 ? module.vnet[0].output.vnet_name : null
   }
-  description = "Network resources"
+  description = "Network resources — Platform LZ VNet, subnets, private DNS zones, private endpoints"
 }
 
 output "devops_devbox" {
