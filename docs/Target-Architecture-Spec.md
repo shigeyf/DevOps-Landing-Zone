@@ -785,7 +785,7 @@ The following ADR documents contain detailed design decisions for each topic are
    - Add both project LZ and repo LZ repos as Git submodules in the GitOps governance repo.
    - Document the GitOps onboarding workflow.
 
-6. **Phase 4 — Documentation & examples:**
+6. **Phase 5 — Documentation & examples:**
    - Add multi-repo example tfvars.
    - Add BYO VNet example tfvars.
    - Add architecture diagrams for both modes.
