@@ -121,12 +121,9 @@ The subscription-to-environment mapping is defined in each project's `terraform.
 ```text
 Platform LZ (Tier 1)                Project (Tier 2)
 ┌─────────────────────┐             ┌──────────────────────────────┐
-│ Creates:            │             │ Reads:                       │
-│ • identity RG       │────────────►│ • identity RG name from LZ   │
-│   (empty at first)  │             │                              │
-│                     │             │ Creates (current):           │
-│                     │             │ • 7 UAMIs (env × job type)   │
-│                     │             │   feat-plan, dev-plan,       │
+│ Provides:           │             │ Creates (in Project RG):     │
+│ • Shared infra      │────────────►│ • 7 UAMIs (env × job type)   │
+│   (ACR, Log, UAMI)  │             │   feat-plan, dev-plan,       │
 │                     │             │   stg-plan, prod-plan,       │
 │                     │             │   dev-apply, stg-apply,      │
 │                     │             │   prod-apply                 │

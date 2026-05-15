@@ -85,12 +85,12 @@ Layer 1 状態バックエンドとその保護チェーンを作成する。
 
 Org LZ は、既存および新規のサブモジュールを使用して組織全体の共有インフラをプロビジョニングする単一のルートモジュールである。
 
-| サブモジュール       | 責務                                                                       | プラットフォーム非依存? | ステータス |
-| -------------------- | -------------------------------------------------------------------------- | ----------------------- | ---------- |
-| `vnet`               | プラットフォーム VNet + サブネット + NAT Gateway + プライベート DNS ゾーン | はい                    | 既存       |
-| `acr`                | Azure Container Registry + イメージビルドタスク                            | はい                    | 既存       |
-| `org_governance`     | 組織レベルのルールセット、ランナーグループ、エージェントプール             | いいえ（ディスパッチ）  | 新規       |
-| `devcenter`          | Dev Center + Dev Box Definitions（組織カタログ）                           | はい                    | 新規       |
+| サブモジュール   | 責務                                                                       | プラットフォーム非依存? | ステータス |
+| ---------------- | -------------------------------------------------------------------------- | ----------------------- | ---------- |
+| `vnet`           | プラットフォーム VNet + サブネット + NAT Gateway + プライベート DNS ゾーン | はい                    | 既存       |
+| `acr`            | Azure Container Registry + イメージビルドタスク                            | はい                    | 既存       |
+| `org_governance` | 組織レベルのルールセット、ランナーグループ、エージェントプール             | いいえ（ディスパッチ）  | 新規       |
+| `devcenter`      | Dev Center + Dev Box Definitions（組織カタログ）                           | はい                    | 新規       |
 
 > [!NOTE]
 > `resource_providers` はターゲット設計では意図的に**モジュール化しない**。
@@ -157,7 +157,6 @@ module "org_governance" {
 | Dev Center                 | `azurerm_dev_center`                    | 組織全体の開発者 Dev Box 制御プレーン                                    |
 | Dev Box Definitions        | `azurerm_dev_center_dev_box_definition` | イメージ/SKU ごとの Dev Box 定義（カタログ）                             |
 | DevBox RG                  | `azurerm_resource_group`                | Dev Center と定義を格納                                                  |
-| Identity RG                | `azurerm_resource_group`                | プロジェクト UAMI の組織レベルコンテナ（Layer 2 で投入）                 |
 | KV シークレット（VCS PAT） | `azurerm_key_vault_secret`              | プロジェクトプロビジョニング用にブートストラップ KV に格納される VCS PAT |
 
 ---
@@ -179,16 +178,20 @@ module "org_governance" {
 
 プロジェクトごとの状態インフラを作成:
 
-- プロジェクトスコープのリソースグループ（プラットフォームサブスクリプション内）
+- プロジェクトスコープのリソースグループ（プラットフォームサブスクリプション内、全プロジェクトリソースを格納）
 - Layer 2 Storage Account（LRS デフォルト、レプリケーション選択可）
 - プロジェクト所有の Key Vault（ブートストラップ KV とは別）
 
 ### `project_identity`
 
-7 つのプロジェクトスコープ UAMI を作成:
+**プロジェクト RG 内** に 7 つのプロジェクトスコープ UAMI を作成:
 
 - `feat-plan`、`dev-plan`、`stg-plan`、`prod-plan`（plan 専用、読み取りアクセス）
 - `dev-apply`、`stg-apply`、`prod-apply`（apply、書き込みアクセス）
+
+> [!NOTE]
+> すべての UAMI はプロジェクト RG（Layer 2）に作成される。組織レベルの Identity RG は使用しない。
+> これによりプロジェクトが自己完結的になり、Layer 2 が Layer 1 のリソースグループへの書き込みアクセスを必要としない。
 
 各 UAMI には以下が付与される:
 

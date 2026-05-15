@@ -85,12 +85,12 @@ Creates the Layer 1 state backend and its protection chain.
 
 The Org LZ is a single root module that uses existing and new sub-modules to provision organization-wide shared infrastructure.
 
-| Sub-Module           | Responsibility                                            | Platform-Agnostic? | Status   |
-| -------------------- | --------------------------------------------------------- | ------------------ | -------- |
-| `vnet`               | Platform VNet + subnets + NAT Gateway + Private DNS zones | Yes                | Existing |
-| `acr`                | Azure Container Registry + image build tasks              | Yes                | Existing |
-| `org_governance`     | Org-level rulesets, runner groups, agent pools            | No (dispatches)    | New      |
-| `devcenter`          | Dev Center + Dev Box Definitions (org catalog)            | Yes                | New      |
+| Sub-Module       | Responsibility                                            | Platform-Agnostic? | Status   |
+| ---------------- | --------------------------------------------------------- | ------------------ | -------- |
+| `vnet`           | Platform VNet + subnets + NAT Gateway + Private DNS zones | Yes                | Existing |
+| `acr`            | Azure Container Registry + image build tasks              | Yes                | Existing |
+| `org_governance` | Org-level rulesets, runner groups, agent pools            | No (dispatches)    | New      |
+| `devcenter`      | Dev Center + Dev Box Definitions (org catalog)            | Yes                | New      |
 
 > [!NOTE]
 > `resource_providers` is intentionally **not** modularized in the target design.
@@ -168,13 +168,12 @@ Creates the organization-wide Dev Center and Dev Box catalog.
 
 **Deployed resources:**
 
-| Resource              | Terraform Type                          | Purpose                                                     |
-| --------------------- | --------------------------------------- | ----------------------------------------------------------- |
-| Dev Center            | `azurerm_dev_center`                    | Org-wide control plane for developer Dev Boxes              |
-| Dev Box Definitions   | `azurerm_dev_center_dev_box_definition` | Per-image/per-SKU Dev Box definitions (catalog)             |
-| DevBox RG             | `azurerm_resource_group`                | Hosts the Dev Center and definitions                        |
-| Identity RG           | `azurerm_resource_group`                | Org-level container for project UAMIs (populated at Tier 2) |
-| KV secrets (VCS PATs) | `azurerm_key_vault_secret`              | VCS PATs stored in bootstrap KV for project provisioning    |
+| Resource              | Terraform Type                          | Purpose                                                  |
+| --------------------- | --------------------------------------- | -------------------------------------------------------- |
+| Dev Center            | `azurerm_dev_center`                    | Org-wide control plane for developer Dev Boxes           |
+| Dev Box Definitions   | `azurerm_dev_center_dev_box_definition` | Per-image/per-SKU Dev Box definitions (catalog)          |
+| DevBox RG             | `azurerm_resource_group`                | Hosts the Dev Center and definitions                     |
+| KV secrets (VCS PATs) | `azurerm_key_vault_secret`              | VCS PATs stored in bootstrap KV for project provisioning |
 
 ---
 
@@ -197,18 +196,18 @@ Creates per-project state infrastructure.
 
 **Deployed resources:**
 
-| Resource                 | Terraform Type                                  | Purpose                                                                                |
-| ------------------------ | ----------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Project Resource Group   | `azurerm_resource_group`                        | Houses all project-owned resources in the platform subscription                        |
-| Layer 2 Storage Account  | `azurerm_storage_account`                       | Stores Layer 2 tfstate for project's own app IaC (LRS default, selectable replication) |
-| Layer 2 blob containers  | `azurerm_storage_container`                     | Per-workspace tfstate containers for the project team                                  |
-| Project Key Vault        | `azurerm_key_vault`                             | Project-owned secrets and keys (distinct from bootstrap KV)                            |
-| Layer 2 Private Endpoint | `azurerm_private_endpoint`                      | Private connectivity to the Layer 2 SA from the project's runner network               |
-| Layer 2 PE DNS zone link | `azurerm_private_dns_zone_virtual_network_link` | Links the project's VNet to platform DNS zones for PE resolution                       |
+| Resource                 | Terraform Type                                  | Purpose                                                                                      |
+| ------------------------ | ----------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| Project Resource Group   | `azurerm_resource_group`                        | Houses all project-owned resources (state, identities, secrets) in the platform subscription |
+| Layer 2 Storage Account  | `azurerm_storage_account`                       | Stores Layer 2 tfstate for project's own app IaC (LRS default, selectable replication)       |
+| Layer 2 blob containers  | `azurerm_storage_container`                     | Per-workspace tfstate containers for the project team                                        |
+| Project Key Vault        | `azurerm_key_vault`                             | Project-owned secrets and keys (distinct from bootstrap KV)                                  |
+| Layer 2 Private Endpoint | `azurerm_private_endpoint`                      | Private connectivity to the Layer 2 SA from the project's runner network                     |
+| Layer 2 PE DNS zone link | `azurerm_private_dns_zone_virtual_network_link` | Links the project's VNet to platform DNS zones for PE resolution                             |
 
 ### `project_identity`
 
-Creates the 7 project-scoped UAMIs.
+Creates the 7 project-scoped UAMIs inside the **Project Resource Group** (created by `project_state`).
 
 **Deployed resources:**
 
@@ -217,6 +216,11 @@ Creates the 7 project-scoped UAMIs.
 | 7 Project UAMIs                 | `azurerm_user_assigned_identity`        | Per-environment, per-job-type identities (`feat-plan`, `dev-plan`, `stg-plan`, `prod-plan`, `dev-apply`, `stg-apply`, `prod-apply`) |
 | OIDC Federated Credentials (×7) | `azurerm_federated_identity_credential` | Trust VCS environment to mint Azure tokens per (env × job)                                                                          |
 | Subscription role assignments   | `azurerm_role_assignment`               | Conditional RBAC on env subscription (only when subscription is declared)                                                           |
+
+> [!NOTE]
+> All UAMIs are created in the Project RG (Layer 2), **not** in a separate org-level Identity RG.
+> This keeps each project self-contained: Layer 2 does not need write access to any Layer 1 resource group,
+> and deleting the Project RG cleanly removes all project-owned identities.
 
 Each UAMI gets:
 
