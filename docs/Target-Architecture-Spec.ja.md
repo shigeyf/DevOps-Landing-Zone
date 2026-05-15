@@ -215,7 +215,7 @@
 
 #### 図 3 — プロジェクトモジュール構成（ゴール 4, 5, 8, 10）
 
-単一のプロジェクトモジュールが apply 時にデプロイするリソース、Platform LZ 出力の消費方法、および GitOps オンボーディングリポジトリがプロビジョニングを駆動する流れを示す。これは、プロジェクトスコープ ACA Environment ゴール（[ADR-001](./adr/ADR-001-platform-lz-resource-scoping.ja.md)）のプロジェクト視点である。
+単一のプロジェクトが Layer 2（`devops-project-lz`）と Layer 3（`devops-repo-lz`）にまたがってデプロイするリソース、Platform LZ 出力の消費方法、および GitOps オンボーディングリポジトリがプロビジョニングを駆動する流れを示す。ターゲットの 3 層モデルでは、「プロジェクトスコープの Azure リソース」セクションが Layer 2 でデプロイされ、「VCS スコープのリソース」セクションが別の Terraform apply として Layer 3 でデプロイされる。レイヤーごとのサブモジュール詳細は[モジュール設計](./Module-Design.ja.md)を参照。
 
 ```text
                 ┌──────────────────────────────────┐
@@ -300,9 +300,12 @@ DevOps プラットフォーム自体の管理に必要なリソース（Layer 1
 | Dev Center      | ~~Dev Center ネットワーク接続~~ _(target: プロジェクトレベルに移動 — [ADR-001](./adr/ADR-001-platform-lz-resource-scoping.ja.md))_ | _(target: LZ レベルでは作成しない)_                                        | ネットワーク接続はプロジェクトの runner ネットワークコンテキスト（`platform` モードではプロジェクト専用サブネット、`byo` モードでは BYO VNet）にバインドする必要がある — ACA Environment リファクタと同じ理由。プロジェクトスコープの行はテーブル C を参照。 |
 | ガバナンス      | 組織レベルの ruleset / runner group _(target — [ADR-001](./adr/ADR-001-platform-lz-resource-scoping.ja.md))_                       | GitHub 組織 ruleset、Azure DevOps エージェントプール / グループ（計画中）  | ブランチ保護、必須ワークフロー、プロジェクト別 runner 隔離を組織レベルで強制（両 VCS プラットフォーム間でパリティ）                                                                                                                                          |
 
-#### テーブル C — プロジェクト別 (`infra/devops-project-lz/` サブモジュール、現在 `infra/devops/project_github/`)
+#### テーブル C — プロジェクト別リソース（Layer 2: `infra/devops-project-lz/` サブモジュール、現在 `infra/devops/project_github/`）
 
-1 プロジェクト分の Azure リソース、ID、VCS 側構成をプロビジョニングします。プロジェクトごとに 1 回実行。`terraform_remote_state` 経由で Platform LZ 出力（テーブル B）を消費します。`project_azuredevops`（[ADR-004](./adr/ADR-004-github-ado-abstraction.ja.md)）も同等のリソースセットを生成し、GitHub と Azure DevOps プロジェクトを機能的に等価にします。
+1 プロジェクト分の Azure リソース、ID、ランナーインフラをプロビジョニングします。プロジェクトごとに 1 回実行。`terraform_remote_state` 経由で Platform LZ 出力（テーブル B）を消費します。`project_azuredevops`（[ADR-004](./adr/ADR-004-github-ado-abstraction.ja.md)）も同等のリソースセットを生成し、GitHub と Azure DevOps プロジェクトを機能的に等価にします。
+
+> [!NOTE]
+> ターゲットの 3 層デプロイメントモデルでは、このテーブル末尾の VCS スコープリソース（リポジトリ、環境、ワークフロー）は**別途** `devops-repo-lz` apply（Layer 3）でプロビジョニングされる — [モジュール設計](./Module-Design.ja.md) §6 および上記 §3.3 参照。テーブル C ではプロジェクトに必要な全リソースの俯瞰としてこれらを保持するが、Layer 2（Azure インフラ）と Layer 3（VCS リソース）のデプロイ境界は別々の Terraform 状態ファイルで強制される。
 
 | カテゴリ      | リソース                                                                                           | 何か                                                                                                                               | 何のため                                                                                                                                                                                                                         |
 | ------------- | -------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

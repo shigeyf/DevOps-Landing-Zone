@@ -215,7 +215,7 @@ Shows the three VNet tiers, who owns each, and the consistency contract a BYO pr
 
 #### Diagram 3 — Project module composition (Goals 4, 5, 8, 10)
 
-Shows what a single project module deploys at apply time, how it consumes Platform LZ outputs, and how the GitOps onboarding repository drives provisioning. This is the project-scoped view of the project-scoped ACA Environment goal ([ADR-001](./adr/ADR-001-platform-lz-resource-scoping.md)).
+Shows what a single project deploys across Layer 2 (`devops-project-lz`) and Layer 3 (`devops-repo-lz`), how it consumes Platform LZ outputs, and how the GitOps onboarding repository drives provisioning. In the target 3-layer model, the "Project-scoped Azure resources" section is deployed by Layer 2 and the "VCS-scoped resources" section is deployed by Layer 3 as a separate Terraform apply. See [Module Design](./Module-Design.md) for the detailed sub-module breakdown per layer.
 
 ```text
                 ┌──────────────────────────────────┐
@@ -300,9 +300,12 @@ Provisions shared infrastructure consumed by **all** projects in the organizatio
 | Dev Center | ~~Dev Center Network Connection~~ _(target: move to project level — [ADR-001](./adr/ADR-001-platform-lz-resource-scoping.md))_ | _(target: no longer created at LZ level)_                                        | The Network Connection must bind to the project's runner network context (project-dedicated subnet in `platform` mode, BYO VNet in `byo` mode) — same reasoning as the ACA Environment refactor. See Table C for the project-scoped row.                        |
 | Governance | Org-level rulesets / runner groups _(target — [ADR-001](./adr/ADR-001-platform-lz-resource-scoping.md))_                       | GitHub org rulesets, Azure DevOps agent pools / groups (planned)                 | Enforce branch protection, required workflows, and per-project runner isolation at the organization level (parity for both VCS platforms)                                                                                                                       |
 
-#### Table C — Per-project (`infra/devops-project-lz/` submodule, currently `infra/devops/project_github/`)
+#### Table C — Per-project resources (Layer 2: `infra/devops-project-lz/`, currently `infra/devops/project_github/`)
 
-Provisions one project's Azure resources, identities, and VCS-side configuration. Run once per project. Consumes Platform LZ outputs (Table B) via `terraform_remote_state`. The same resource set will be created by `project_azuredevops` so GitHub and Azure DevOps projects are functionally equivalent.
+Provisions one project's Azure resources, identities, and runner infrastructure. Run once per project. Consumes Platform LZ outputs (Table B) via `terraform_remote_state`. The same resource set will be created by `project_azuredevops` so GitHub and Azure DevOps projects are functionally equivalent.
+
+> [!NOTE]
+> In the target 3-layer deployment model, the VCS-scoped resources (repositories, environments, workflows) listed at the bottom of this table are provisioned by a **separate** `devops-repo-lz` apply (Layer 3) — see [Module Design](./Module-Design.md) §6 and §3.3 above. Table C retains them for completeness as a full view of what a project needs, but the deployment boundary between Layer 2 (Azure infra) and Layer 3 (VCS resources) is enforced by separate Terraform state files.
 
 | Category     | Resource                                                                                 | What is it                                                                                                                   | What is it for                                                                                                                                                                                                                                         |
 | ------------ | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
