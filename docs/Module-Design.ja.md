@@ -39,13 +39,13 @@ DevOps Landing Zone は **4 つ** の個別の Terraform デプロイメント�
 
 ## 2. モジュール設計原則
 
-1. **VCS プラットフォームの抽象化** — `project_repo`、`environment`、`runner` などのサブモジュールは `vcs_provider` 入力（`"github"` または `"azuredevops"`）を受け取り、内部で正しい実装にディスパッチする。呼び出し側は統一された入出力契約を得る。
+1. **VCS プラットフォームの抽象化** — `repo_repository`、`repo_environment`、`repo_runner` などのサブモジュールは `vcs_provider` 入力（`"github"` または `"azuredevops"`）を受け取り、内部で正しい実装にディスパッチする。呼び出し側は統一された入出力契約を得る。
 
 2. **単一責務** — 各サブモジュールは正確に 1 つのドメイン概念を所有する（例: プロジェクト状態ストレージ、プロジェクト ID、リポジトリプロビジョニング、環境バインディング）。
 
-3. **可能な限りプラットフォーム非依存** — 純粋な Azure リソースを扱うモジュール（`project_state`、`project_identity`、`project_network`、`aca_env`）は GitHub と Azure DevOps の両プロジェクトで同一に動作する。
+3. **可能な限りプラットフォーム非依存** — 純粋な Azure リソースを扱うモジュール（`project_state`、`project_identity`、`project_network`）は GitHub と Azure DevOps の両プロジェクトで同一に動作する。
 
-4. **必要な場合のみ VCS 固有** — VCS API と対話するモジュール（`project_repo`、`environment`、`runner`）は抽象ディスパッチパターンを使用する。
+4. **必要な場合のみ VCS 固有** — VCS API と対話するモジュール（`repo_repository`、`repo_environment`、`repo_runner`）は抽象ディスパッチパターンを使用する。
 
 5. **合成可能、ネストしない** — サブモジュールは互いに呼び出さない。ルートモジュール（`project_github`、`repo_github` 等）がサブモジュールを合成し、出力を渡す。
 
@@ -240,27 +240,26 @@ module "org_governance" {
 | 8   | OIDC フェデレーション資格情報 (×7)                   | `azurerm_federated_identity_credential`                  | Project RG       | `project_identity` |
 | 9   | サブスクリプションロール割り当て                     | `azurerm_role_assignment`（条件付き）                    | _(sub スコープ)_ | `project_identity` |
 | 10  | プロジェクト ACA サブネット _(platform モード)_      | `azurerm_subnet`                                         | Network RG       | `project_network`  |
-| 11  | ACA Environment                                      | `azurerm_container_app_environment`                      | Project RG       | `aca_env`          |
-| 12  | ACA Environment DNS ゾーンリンク                     | `azurerm_private_dns_zone_virtual_network_link`          | Project RG       | `aca_env`          |
-| 13  | DevCenter Project                                    | `azurerm_dev_center_project`                             | Project RG       | `devbox_project`   |
-| 14  | Dev Box Pool                                         | `azurerm_dev_center_project_pool`                        | Project RG       | `devbox_project`   |
-| 15  | Network Connection                                   | `azurerm_dev_center_network_connection`                  | Project RG       | `devbox_project`   |
-| 16  | Dev Box ロール割り当て                               | `azurerm_role_assignment`                                | Project RG       | `devbox_project`   |
-| 17  | ACA ジョブ（GitHub ランナーまたは ADO エージェント） | `azurerm_container_app_job`                              | Project RG       | `runner`           |
-| 18  | ランナーグループ/エージェントプール登録              | `github_actions_runner_group` / `azuredevops_agent_pool` | —                | `runner`           |
+| 11  | ACA Environment                                      | `azurerm_container_app_environment`                      | Project RG       | `project_runner`   |
+| 12  | ACA Environment DNS ゾーンリンク                     | `azurerm_private_dns_zone_virtual_network_link`          | Project RG       | `project_runner`   |
+| 13  | DevCenter Project                                    | `azurerm_dev_center_project`                             | Project RG       | `project_devbox`   |
+| 14  | Dev Box Pool                                         | `azurerm_dev_center_project_pool`                        | Project RG       | `project_devbox`   |
+| 15  | Network Connection                                   | `azurerm_dev_center_network_connection`                  | Project RG       | `project_devbox`   |
+| 16  | Dev Box ロール割り当て                               | `azurerm_role_assignment`                                | Project RG       | `project_devbox`   |
+| 17  | ACA ジョブ（GitHub ランナーまたは ADO エージェント） | `azurerm_container_app_job`                              | Project RG       | `project_runner`   |
+| 18  | ランナーグループ/エージェントプール登録              | `github_actions_runner_group` / `azuredevops_agent_pool` | —                | `project_runner`   |
 
 **合計: 1 リソースグループ（Project RG）、プロジェクトあたり約 18 リソース。**
 
 ### サブモジュール
 
-| サブモジュール     | 責務                                                                          | プラットフォーム非依存? | ステータス |
-| ------------------ | ----------------------------------------------------------------------------- | ----------------------- | ---------- |
-| `project_state`    | Layer 2 Storage Account + プロジェクト Key Vault + プロジェクト RG            | はい                    | 新規       |
-| `project_identity` | 7 UAMI + OIDC フェデレーション資格情報 + サブスクリプション RBAC              | はい                    | 新規       |
-| `project_network`  | サブネットスライス（platform モード）または BYO VNet 検証                     | はい                    | 新規       |
-| `aca_env`          | プロジェクトのネットワークコンテキストにバインドされた ACA Environment        | はい                    | 既存       |
-| `devbox_project`   | DevCenter Project + Dev Box Pool + Network Connection                         | はい                    | 新規       |
-| `runner`           | GitHub ランナーグループまたは ADO エージェントプールに登録する ACA ジョブ定義 | いいえ（ディスパッチ）  | 新規       |
+| サブモジュール     | 責務                                                                                                                                   | プラットフォーム非依存? | ステータス |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- | ---------- |
+| `project_state`    | Layer 2 Storage Account + プロジェクト Key Vault + プロジェクト RG                                                                     | はい                    | 新規       |
+| `project_identity` | 7 UAMI + OIDC フェデレーション資格情報 + サブスクリプション RBAC                                                                       | はい                    | 新規       |
+| `project_network`  | サブネットスライス（platform モード）または BYO VNet 検証                                                                              | はい                    | 新規       |
+| `project_devbox`   | DevCenter Project + Dev Box Pool + Network Connection                                                                                  | はい                    | 新規       |
+| `project_runner`   | ACA Environment + ACA ジョブ、GitHub ランナーグループまたは ADO エージェントプールに登録（ランナーコンピュートプラットフォームを含む） | いいえ（ディスパッチ）  | 新規       |
 
 ### `project_state`
 
@@ -316,18 +315,7 @@ module "org_governance" {
 | ----------------------- | ---------------- | ----------------------------------------------------- |
 | _(作成なし — 検証のみ)_ | data ソース      | 外部提供の VNet/サブネットを 7 つの一貫性ルールで検証 |
 
-### `aca_env`
-
-プロジェクトスコープの ACA Environment を作成。
-
-**デプロイされるリソース:**
-
-| リソース                         | Terraform タイプ                                | 目的                                                         |
-| -------------------------------- | ----------------------------------------------- | ------------------------------------------------------------ |
-| ACA Environment                  | `azurerm_container_app_environment`             | プロジェクトのネットワークコンテキストでランナージョブを実行 |
-| ACA Environment DNS ゾーンリンク | `azurerm_private_dns_zone_virtual_network_link` | ACA 内部 DNS をプロジェクトの VNet にリンク                  |
-
-### `devbox_project`
+### `project_devbox`
 
 DevCenter プロジェクトリソースを作成。
 
@@ -340,23 +328,33 @@ DevCenter プロジェクトリソースを作成。
 | Network Connection     | `azurerm_dev_center_network_connection` | プールをプロジェクトのランナーネットワークコンテキストにバインド              |
 | Dev Box ロール割り当て | `azurerm_role_assignment`               | プロジェクトチームに Dev Box のプロビジョニング・管理権限を付与               |
 
-### `runner` — 抽象モジュール
+### `project_runner` — 抽象モジュール
 
-CI/CD ランナー登録用の抽象モジュール。
+プロジェクトのランナーコンピュートプラットフォームを作成する。このモジュールは ACA Environment（コンピュートサーフェス）をプロビジョニングし、`org_governance` が作成した組織レベルのランナーグループ（GitHub）またはエージェントプール（ADO）内に ACA ジョブをセルフホステッドランナーとして登録する。
+
+> [!NOTE]
+> **Runner アーキテクチャ:**
+> `org_governance`（Layer 1）は組織レベルのランナーグループ（GitHub）/ エージェントプール（ADO）を作成する — 組織コンテナ。
+> `project_runner`（Layer 2）は実際のコンピュートを作成する: ACA Environment + ACA ジョブ + 組織レベルのコンテナへの登録。
+> `repo_runner`（Layer 3、オプション）は分離されたランナーが必要なリポジトリ用の専用 ACA ジョブを作成する。
 
 **デプロイされるリソース（GitHub）:**
 
-| リソース                       | Terraform タイプ              | 目的                                                          |
-| ------------------------------ | ----------------------------- | ------------------------------------------------------------- |
-| ACA ジョブ（GitHub ランナー）  | `azurerm_container_app_job`   | 共有 ACR からイメージを取得するセルフホステッドランナージョブ |
-| ランナーグループメンバーシップ | `github_actions_runner_group` | プロジェクトの CI ジョブを専用ランナーグループにルーティング  |
+| リソース                         | Terraform タイプ                                | 目的                                                          |
+| -------------------------------- | ----------------------------------------------- | ------------------------------------------------------------- |
+| ACA Environment                  | `azurerm_container_app_environment`             | プロジェクトのネットワークコンテキストでランナージョブを実行  |
+| ACA Environment DNS ゾーンリンク | `azurerm_private_dns_zone_virtual_network_link` | ACA 内部 DNS をプロジェクトの VNet にリンク                   |
+| ACA ジョブ（GitHub ランナー）    | `azurerm_container_app_job`                     | 共有 ACR からイメージを取得するセルフホステッドランナージョブ |
+| ランナーグループメンバーシップ   | `github_actions_runner_group`                   | プロジェクトの CI ジョブを専用ランナーグループにルーティング  |
 
 **デプロイされるリソース（Azure DevOps）:**
 
-| リソース                       | Terraform タイプ                 | 目的                                                              |
-| ------------------------------ | -------------------------------- | ----------------------------------------------------------------- |
-| ACA ジョブ（ADO エージェント） | `azurerm_container_app_job`      | 共有 ACR からイメージを取得するセルフホステッドエージェントジョブ |
-| エージェントプール登録         | `azuredevops_agent_pool`（参照） | プロジェクトのパイプラインを専用エージェントプールにルーティング  |
+| リソース                         | Terraform タイプ                                | 目的                                                              |
+| -------------------------------- | ----------------------------------------------- | ----------------------------------------------------------------- |
+| ACA Environment                  | `azurerm_container_app_environment`             | プロジェクトのネットワークコンテキストでエージェントジョブを実行  |
+| ACA Environment DNS ゾーンリンク | `azurerm_private_dns_zone_virtual_network_link` | ACA 内部 DNS をプロジェクトの VNet にリンク                       |
+| ACA ジョブ（ADO エージェント）   | `azurerm_container_app_job`                     | 共有 ACR からイメージを取得するセルフホステッドエージェントジョブ |
+| エージェントプール登録           | `azuredevops_agent_pool`（参照）                | プロジェクトのパイプラインを専用エージェントプールにルーティング  |
 
 ---
 
@@ -366,34 +364,34 @@ Repo LZ は個別のリポジトリとその環境をプロビジョニングす
 
 ### Layer 3 — 統合リソース一覧（リポジトリごと）
 
-| #   | リソース                               | Terraform タイプ / プラットフォーム                                              | サブモジュール |
-| --- | -------------------------------------- | -------------------------------------------------------------------------------- | -------------- |
-| 1   | GitHub リポジトリ / ADO Git リポジトリ | `github_repository` / `azuredevops_git_repository`                               | `project_repo` |
-| 2   | ブランチ保護 / ポリシー                | `github_branch_protection_v3` / `azuredevops_branch_policy_*`                    | `project_repo` |
-| 3   | GitHub 環境 / ADO 環境 (×N)            | `github_repository_environment` / `azuredevops_environment`                      | `environment`  |
-| 4   | デプロイメント保護ルール / 承認 (×N)   | `github_repository_environment_deployment_policy` / `azuredevops_check_approval` | `environment`  |
-| 5   | 環境シークレット / サービス接続        | `github_actions_environment_secret` / `azuredevops_serviceendpoint_azurerm`      | `environment`  |
-| 6   | ワークフロー YAML / パイプライン定義   | `github_repository_file` / `azuredevops_build_definition`                        | `workflow_gen` |
-| 7   | ACA ジョブ（専用ランナー、オプション） | `azurerm_container_app_job`                                                      | `runner`       |
+| #   | リソース                               | Terraform タイプ / プラットフォーム                                              | サブモジュール      |
+| --- | -------------------------------------- | -------------------------------------------------------------------------------- | ------------------- |
+| 1   | GitHub リポジトリ / ADO Git リポジトリ | `github_repository` / `azuredevops_git_repository`                               | `repo_repository`   |
+| 2   | ブランチ保護 / ポリシー                | `github_branch_protection_v3` / `azuredevops_branch_policy_*`                    | `repo_repository`   |
+| 3   | GitHub 環境 / ADO 環境 (×N)            | `github_repository_environment` / `azuredevops_environment`                      | `repo_environment`  |
+| 4   | デプロイメント保護ルール / 承認 (×N)   | `github_repository_environment_deployment_policy` / `azuredevops_check_approval` | `repo_environment`  |
+| 5   | 環境シークレット / サービス接続        | `github_actions_environment_secret` / `azuredevops_serviceendpoint_azurerm`      | `repo_environment`  |
+| 6   | ワークフロー YAML / パイプライン定義   | `github_repository_file` / `azuredevops_build_definition`                        | `repo_workflow_gen` |
+| 7   | ACA ジョブ（専用ランナー、オプション） | `azurerm_container_app_job`                                                      | `repo_runner`       |
 
 **合計: 0 リソースグループ（VCS API + オプションで Layer 2 の Project RG を使用）、リポジトリあたり約 7+ リソース（N = 環境数）。**
 
 ### サブモジュール
 
-| サブモジュール | 責務                                                           | プラットフォーム非依存? | ステータス |
-| -------------- | -------------------------------------------------------------- | ----------------------- | ---------- |
-| `project_repo` | 抽象: リポジトリ作成 + ブランチ保護                            | いいえ（ディスパッチ）  | 新規       |
-| `environment`  | 抽象: 環境作成 + 保護ルール + UAMI バインディング              | いいえ（ディスパッチ）  | 新規       |
-| `runner`       | 抽象: リポジトリごとのランナー登録（オプション、専用プール用） | いいえ（ディスパッチ）  | 新規       |
-| `workflow_gen` | CI/CD ワークフロー/パイプライン生成（プロファイル駆動）        | いいえ（ディスパッチ）  | 新規       |
+| サブモジュール      | 責務                                                           | プラットフォーム非依存? | ステータス |
+| ------------------- | -------------------------------------------------------------- | ----------------------- | ---------- |
+| `repo_repository`   | 抽象: リポジトリ作成 + ブランチ保護                            | いいえ（ディスパッチ）  | 新規       |
+| `repo_environment`  | 抽象: 環境作成 + 保護ルール + UAMI バインディング              | いいえ（ディスパッチ）  | 新規       |
+| `repo_runner`       | 抽象: リポジトリごとのランナー登録（オプション、専用プール用） | いいえ（ディスパッチ）  | 新規       |
+| `repo_workflow_gen` | CI/CD ワークフロー/パイプライン生成（プロファイル駆動）        | いいえ（ディスパッチ）  | 新規       |
 
-### `project_repo` — 抽象モジュール
+### `repo_repository` — 抽象モジュール
 
 VCS プラットフォームに関係なく統一インターフェースでリポジトリを作成:
 
 ```hcl
-module "repo" {
-  source       = "./modules/project_repo"
+module "repo_repository" {
+  source       = "./modules/repo_repository"
   vcs_provider = var.vcs_provider   # "github" | "azuredevops"
 
   # 統一入力
@@ -408,8 +406,8 @@ module "repo" {
 
 内部でディスパッチ:
 
-- `modules/project_repo/github.tf` — `github_repository` + `github_branch_protection_v3`
-- `modules/project_repo/azuredevops.tf` — `azuredevops_git_repository` + ブランチポリシー
+- `modules/repo_repository/github.tf` — `github_repository` + `github_branch_protection_v3`
+- `modules/repo_repository/azuredevops.tf` — `azuredevops_git_repository` + ブランチポリシー
 
 **デプロイされるリソース（GitHub）:**
 
@@ -428,13 +426,13 @@ module "repo" {
 
 **出力:** `repo_id`、`repo_url`、`repo_full_name`
 
-### `environment` — 抽象モジュール
+### `repo_environment` — 抽象モジュール
 
 保護ルール付きのデプロイメント環境を作成:
 
 ```hcl
-module "env" {
-  source       = "./modules/environment"
+module "repo_environment" {
+  source       = "./modules/repo_environment"
   vcs_provider = var.vcs_provider
 
   # 統一入力
@@ -451,8 +449,8 @@ module "env" {
 
 内部でディスパッチ:
 
-- `modules/environment/github.tf` — `github_repository_environment` + デプロイメント保護ルール
-- `modules/environment/azuredevops.tf` — `azuredevops_environment` + 承認 + チェック
+- `modules/repo_environment/github.tf` — `github_repository_environment` + デプロイメント保護ルール
+- `modules/repo_environment/azuredevops.tf` — `azuredevops_environment` + 承認 + チェック
 
 **デプロイされるリソース（GitHub）:**
 
@@ -472,7 +470,7 @@ module "env" {
 
 **出力:** `environment_id`、`environment_name`
 
-### `workflow_gen`
+### `repo_workflow_gen`
 
 プロファイル駆動の CI/CD ワークフローまたはパイプラインファイルを生成。
 
@@ -488,13 +486,13 @@ module "env" {
 | ---------------- | ------------------------------ | -------------------------------------------------------------- |
 | パイプライン定義 | `azuredevops_build_definition` | (env × job) マトリクスをターゲットとする YAML パイプライン定義 |
 
-### `runner`（リポジトリレベル、オプション）
+### `repo_runner`（オプション）— 抽象モジュール
 
 プロジェクトレベルのランナーグループを共有する代わりに専用ランナーが必要なリポジトリ用:
 
 ```hcl
-module "runner" {
-  source       = "./modules/runner"
+module "repo_runner" {
+  source       = "./modules/repo_runner"
   vcs_provider = var.vcs_provider
 
   project_name  = var.project_name
@@ -504,13 +502,13 @@ module "runner" {
 }
 ```
 
-**デプロイされるリソース:** Layer 2 の `runner` モジュールと同一（ACA ジョブ + ランナーグループ/エージェントプール登録）だが、単一リポジトリにスコープ。
+**デプロイされるリソース:** 専用 ACA ジョブ + ランナーグループ/エージェントプール登録を単一リポジトリにスコープ（Layer 2 の `project_runner` が作成した ACA Environment を使用）。
 
 ---
 
 ## 7. 抽象モジュールパターン
 
-すべての抽象（VCS ディスパッチ）モジュールは以下のパターンに従う:
+すべての抽象（VCS ディスパッチ）モジュール（例: `repo_repository`、`repo_environment`、`repo_runner`、`project_runner`）は以下のパターンに従う:
 
 ```text
 modules/<module_name>/
@@ -554,11 +552,11 @@ modules/<module_name>/
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ devops-project-lz (Layer 2 ルートモジュール — プロジェクトごとに 1 つ)    │
 │                                                                         │
-│  ┌─────────────┐ ┌────────────────┐ ┌───────────────┐ ┌─────────────┐ │
-│  │project_state│ │project_identity│ │project_network│ │   aca_env   │ │
-│  └─────────────┘ └────────────────┘ └───────────────┘ └─────────────┘ │
+│  ┌─────────────┐ ┌────────────────┐ ┌───────────────┐                 │
+│  │project_state│ │project_identity│ │project_network│                 │
+│  └─────────────┘ └────────────────┘ └───────────────┘                 │
 │  ┌──────────────┐ ┌────────────────┐                                   │
-│  │devbox_project│ │    runner      │                                    │
+│  │project_devbox│ │ project_runner │                                    │
 │  └──────────────┘ └────────────────┘                                   │
 └─────────────────────────────────────────────────────────────────────────┘
                               │ remote_state
@@ -566,9 +564,9 @@ modules/<module_name>/
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ devops-repo-lz (Layer 3 ルートモジュール — リポジトリごとに 1 つ)         │
 │                                                                         │
-│  ┌────────────┐ ┌─────────────┐ ┌────────────┐ ┌────────────────────┐ │
-│  │project_repo│ │ environment │ │workflow_gen│ │ runner (オプション) │ │
-│  └────────────┘ └─────────────┘ └────────────┘ └────────────────────┘ │
+│  ┌───────────────┐ ┌────────────────┐ ┌────────────────┐ ┌─────────────────────┐ │
+│  │repo_repository│ │repo_environment│ │repo_workflow_gen│ │repo_runner (オプション)│ │
+│  └───────────────┘ └────────────────┘ └────────────────┘ └─────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -578,22 +576,22 @@ modules/<module_name>/
 
 ### フェーズ 1 — プラットフォーム非依存のプロジェクトサブモジュール
 
-| 優先度 | モジュール         | 依存関係                    |
-| ------ | ------------------ | --------------------------- |
-| 1      | `project_state`    | なし（純粋な Azure）        |
-| 2      | `project_identity` | なし（純粋な Azure）        |
-| 3      | `project_network`  | Org LZ VNet 出力            |
-| 4      | `aca_env`          | `project_network`           |
-| 5      | `devbox_project`   | `project_network`           |
-| 6      | `runner`           | `aca_env`、VCS コンテキスト |
+| 優先度 | モジュール         | 依存関係                            |
+| ------ | ------------------ | ----------------------------------- |
+| 1      | `project_state`    | なし（純粋な Azure）                |
+| 2      | `project_identity` | なし（純粋な Azure）                |
+| 3      | `project_network`  | Org LZ VNet 出力                    |
+| 4      | `project_devbox`   | `project_network`                   |
+| 5      | `project_runner`   | `project_network`、VCS コンテキスト |
 
 ### フェーズ 2 — 抽象リポジトリ/環境サブモジュール
 
-| 優先度 | モジュール     | 依存関係                                  |
-| ------ | -------------- | ----------------------------------------- |
-| 1      | `project_repo` | VCS プロバイダー設定                      |
-| 2      | `environment`  | `project_identity`（UAMI）                |
-| 3      | `runner`       | `aca_env`（リポジトリレベル、オプション） |
+| 優先度 | モジュール          | 依存関係                                         |
+| ------ | ------------------- | ------------------------------------------------ |
+| 1      | `repo_repository`   | VCS プロバイダー設定                             |
+| 2      | `repo_environment`  | `project_identity`（UAMI）                       |
+| 3      | `repo_runner`       | `project_runner`（リポジトリレベル、オプション） |
+| 4      | `repo_workflow_gen` | `repo_repository`                                |
 
 ### フェーズ 3 — 組織レベルガバナンス
 
@@ -604,8 +602,8 @@ modules/<module_name>/
 ### 順序
 
 1. まず `project_state` + `project_identity` + `project_network` を実装（純粋な Azure、VCS 依存なし）。
-2. `aca_env` + `devbox_project` + `runner` を実装（プロジェクトレベルのコンピュート）。
-3. `project_repo` + `environment` を実装（Layer 3 用の抽象 VCS モジュール）。
+2. `project_devbox` + `project_runner` を実装（プロジェクトレベルのコンピュート。`project_runner` は ACA Environment を含む）。
+3. `repo_repository` + `repo_environment` + `repo_workflow_gen` を実装（Layer 3 用の抽象 VCS モジュール）。
 4. `org_governance` を実装（Layer 1 用の抽象ガバナンス）。
 5. ルートモジュール（`project_github`、`project_azuredevops`、`repo_github`、`repo_azuredevops`）に合成。
 
