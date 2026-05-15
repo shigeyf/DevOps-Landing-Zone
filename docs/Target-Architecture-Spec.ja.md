@@ -30,12 +30,12 @@
 
 本ドキュメントの主目的は、DevOps Landing Zone の正しい **Organization → Project → Repository → Environment（Org-Project-Repo-Env）リソース階層を定義し精緻化する** ことである。この階層の各レイヤーには明確な責務がある:
 
-| レイヤー         | 責務                                                                                               | Terraform スコープ                             |
-| ---------------- | -------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
-| **組織**         | すべてのプロジェクトで使用する共有インフラとガバナンス（ACR、Dev Center、VNet、DNS、ルールセット） | `devops-org-lz` (Tier 1)                       |
-| **プロジェクト** | リポジトリ、ID、ランナー、ネットワークコンテキストの論理グループ化（1 つの製品/ワークロード向け）  | `devops-project-lz/project_github` 等 (Tier 2) |
-| **リポジトリ**   | プロファイル駆動の CI/CD ワークフローとオプションのリポジトリ別 ID を持つ個別の Git リポジトリ     | プロジェクトモジュール内                       |
-| **環境**         | Azure サブスクリプション、UAMI、GitHub/ADO 環境と 1:1 でマッピングされるデプロイターゲット         | プロジェクトモジュール内                       |
+| レイヤー         | 責務                                                                                               | Terraform スコープ                                  |
+| ---------------- | -------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| **組織**         | すべてのプロジェクトで使用する共有インフラとガバナンス（ACR、Dev Center、VNet、DNS、ルールセット） | `devops-org-lz` (Tier 1)                            |
+| **プロジェクト** | リポジトリ、ID、ランナー、ネットワークコンテキストの論理グループ化（1 つの製品/ワークロード向け）  | `devops-project-lz` (Tier 2)                        |
+| **リポジトリ**   | プロファイル駆動の CI/CD ワークフローとオプションのリポジトリ別 ID を持つ個別の Git リポジトリ     | `devops-repo-lz` (Tier 3)                           |
+| **環境**         | Azure サブスクリプション、UAMI、GitHub/ADO 環境と 1:1 でマッピングされるデプロイターゲット         | `devops-repo-lz` (Tier 3、リポジトリコンテキスト内) |
 
 以降で特定されるすべてのギャップ、すべてのゴール、すべての設計決定は、リソースがこの階層の **正しいレイヤーにスコープされる** ことを確実にするために存在する。
 
@@ -82,9 +82,9 @@
 **1. 4 層のリソース階層 — Organization → Project → Repository → Environment**（§2）
 
 - **Organization（Platform LZ, `devops-org-lz`）** — 組織全体で共有されるインフラ: ブートストラップ Storage Account（Layer 1 状態）、ACR、Log Analytics、container-run UAMI、Platform VNet、Private DNS ゾーン、Dev Center、コンテナイメージビルドタスク。
-- **Project（`project_github` / `project_azuredevops`）** — チーム所有と課金分離の単位。プロジェクト固有の UAMI、OIDC 認証情報、Layer 2 状態 Storage Account、ACA Environment、Project DevOps ネットワークコンテキスト（`platform` モードでは共有 Platform LZ VNet 内のプロジェクト専用サブネット、`byo` モードでは BYO VNet）、DevBox プールを所有。
-- **Repository** — プロジェクトごとに 1 つ以上のリポジトリ。各リポジトリは CI/CD プロファイル（例: `terraform-env`、`container-image`）に従う。
-- **Environment** — GitHub/ADO 環境と Azure サブスクリプション + plan/apply UAMI ペアとの 1:1 対応。環境は宣言的で、{features, development, staging, production} のサブセットを許可。
+- **Project（`devops-project-lz`）** — チーム所有と課金分離の単位。プロジェクト固有の UAMI、OIDC 認証情報、Layer 2 状態 Storage Account、ACA Environment、Project DevOps ネットワークコンテキスト（`platform` モードでは共有 Platform LZ VNet 内のプロジェクト専用サブネット、`byo` モードでは BYO VNet）、DevBox プールを所有。
+- **Repository（`devops-repo-lz`）** — プロジェクトごとに 1 つ以上のリポジトリ。各リポジトリは CI/CD プロファイル（例: `terraform-env`、`container-image`）に従う。独自の Terraform 状態を持つ個別の apply としてプロビジョニングされる。
+- **Environment** — GitHub/ADO 環境と Azure サブスクリプション + plan/apply UAMI ペアとの 1:1 対応。環境は宣言的で、{features, development, staging, production} のサブセットを許可。`devops-repo-lz` レイヤーの一部としてプロビジョニングされる。
 
 **2. 2 層状態管理**（§3.2）
 
@@ -145,35 +145,40 @@
 │ ORGANIZATION  (GitHub Org │ Azure DevOps Org)                              │
 │                                                                             │
 │  ┌─ Bootstrap (infra/bootstrap) ─────────────────────────────────────────┐ │
-│  │  Layer 1 Storage Account  ◄── tfstate: bootstrap, LZ, project_*       │ │
+│  │  Layer 1 Storage Account  ◄── tfstate: bootstrap, LZ, project, repo   │ │
 │  │  Bootstrap Key Vault       (VCS PATs)                                 │ │
 │  └───────────────────────────────────────────────────────────────────────┘ │
 │                                  │                                          │
-│  ┌─ Platform LZ (devops-org-lz) ──────▼───────────────────────────────────┐ │
+│  ┌─ Platform LZ (devops-org-lz) ──────▼──── Tier 1 ──────────────────────┐ │
 │  │  ACR  •  Log Analytics  •  container-run UAMI                         │ │
 │  │  Identity RG (org container for project UAMIs)                        │ │
 │  │  Platform VNet  •  Private DNS zones  •  NAT  •  Dev Center           │ │
-│  │  Org-level governance (rulesets / runner groups / agent pools — §9)   │ │
+│  │  Org-level governance (rulesets / runner groups / agent pools)         │ │
 │  └───────────────────────────────────────────────────────────────────────┘ │
 │                                  │ remote_state outputs                     │
 │        ┌─────────────────────────┴────────────────────────┐                 │
 │        ▼                                                  ▼                 │
-│  ┌─ PROJECT A (project_github) ──────┐   ┌─ PROJECT B (project_azuredevops)┐│
-│  │  7 UAMIs  (feat-plan, dev/stg/prod│   │  7 UAMIs (same shape)           ││
-│  │           plan+apply)              │   │  ADO Project = boundary         ││
-│  │  Layer 2 Storage Account ◄── app  │   │  Layer 2 SA ◄── app tfstate     ││
-│  │  ACA Environment (project runner  │   │  ACA Environment (project runner││
-│  │  network context)                 │   │  network context)               ││
-│  │  Subscriptions: { dev, stg, prod }│   │  Subscriptions: { dev, prod }   ││
-│  │  ┌─ REPOSITORIES ────────────────┐│   │  ┌─ REPOSITORIES ──────────────┐││
-│  │  │  repo-infra  (profile=infra)  ││   │  │  repo-infra (profile=infra) │││
-│  │  │  repo-app    (profile=app)    ││   │  └─────────────────────────────┘││
-│  │  └───────────────────────────────┘│   │  ┌─ ENVIRONMENTS ──────────────┐││
-│  │  ┌─ ENVIRONMENTS ────────────────┐│   │  │  dev → sub-dev  (UAMIs)     │││
-│  │  │  features → sub-feat (UAMI)   ││   │  │  prod → sub-prod (UAMIs)    │││
-│  │  │  dev / staging / prod → subs  ││   │  └─────────────────────────────┘││
-│  │  └───────────────────────────────┘│   └─────────────────────────────────┘│
-│  └────────────────────────────────────┘                                     │
+│  ┌─ PROJECT A (devops-project-lz) ── Tier 2 ─┐   ┌─ PROJECT B ────────────┐│
+│  │  7 UAMIs  (feat-plan, dev/stg/prod        │   │  7 UAMIs (same shape)  ││
+│  │           plan+apply)                      │   │  Layer 2 SA            ││
+│  │  Layer 2 Storage Account ◄── app tfstate   │   │  ACA Environment       ││
+│  │  ACA Environment (project runner context)  │   │  DevBox project pool   ││
+│  │  Project network (platform or BYO)         │   │                        ││
+│  │  DevBox project pool + Network Connection  │   │                        ││
+│  └───────────────────┬────────────────────────┘   └────────────┬───────────┘│
+│                      │ remote_state outputs                     │            │
+│        ┌─────────────┴──────────────────┐          ┌───────────┴──────┐     │
+│        ▼                                ▼          ▼                  ▼     │
+│  ┌─ REPO: repo-infra ── Tier 3 ─┐ ┌─ REPO: repo-app ─┐  ┌─ REPO ────────┐│
+│  │  GitHub/ADO repo              │ │  GitHub/ADO repo  │  │  ADO repo     ││
+│  │  profile = infra              │ │  profile = app    │  │  profile=infra││
+│  │  CI/CD workflows              │ │  CI/CD workflows  │  │               ││
+│  │  ┌─ ENVIRONMENTS ──────────┐ │ │  ┌─ ENVS ──────┐ │  │  ┌─ ENVS ───┐ ││
+│  │  │  dev → sub-dev (UAMIs)  │ │ │  │  dev → ...  │ │  │  │  dev     │ ││
+│  │  │  stg → sub-stg (UAMIs)  │ │ │  │  prod → ... │ │  │  │  prod    │ ││
+│  │  │  prod → sub-prod (UAMIs)│ │ │  └─────────────┘ │  │  └──────────┘ ││
+│  │  └─────────────────────────┘ │ └──────────────────┘  └────────────────┘│
+│  └───────────────────────────────┘                                         │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -436,7 +441,7 @@ DevOps プラットフォーム自体の管理に必要なリソース（Layer 1
 
 ### 3.3 Layer 1 内の運用ティア
 
-Layer 1 内には、Terraform 操作の順序と状態の依存関係を決定する 3 つの運用ティアがある:
+Layer 1 内には、Terraform 操作の順序と状態の依存関係を決定する 4 つの運用ティアがある:
 
 ```text
 ┌─────────────────────────────────────────────────────────────────┐
@@ -459,7 +464,7 @@ Layer 1 内には、Terraform 操作の順序と状態の依存関係を決定�
 │  terraform apply                                                │
 │  作成するもの:                                                   │
 │    • ID RG + コンテナー実行用 UAMI                               │
-│    • エージェント RG + ACR + Log Analytics + ACA Environment      │
+│    • エージェント RG + ACR + Log Analytics                        │
 │    • ネットワーク RG + VNet + サブネット + DNS ゾーン + NAT GW    │
 │    • DevBox Dev Center + 定義                                    │
 │    • Bootstrap KV シークレット (VCS PAT)                         │
@@ -471,24 +476,36 @@ Layer 1 内には、Terraform 操作の順序と状態の依存関係を決定�
 │  状態キー: "devops-lz.terraform.tfstate" (Layer 1 内)            │
 │  読み取り: Tier 0 の bootstrap.config.json                       │
 ├─────────────────────────────────────────────────────────────────┤
-│ Tier 2: プロジェクト (devops-project-lz/project_github or project_azuredevops) │
+│ Tier 2: プロジェクト (devops-project-lz)                          │
 │                                                                 │
 │  terraform init -backend-config=...                             │
 │  terraform apply                                                │
 │  読み取り: Tier 1 (devops-org-lz) の remote_state                 │
 │  作成:                                                           │
-│    • VCS リソース（リポジトリ、ワークフロー、環境等）             │
-│    • UAMI + フェデレーション ID 資格情報                          │
-│    • ランナー（プロジェクト ACA Env を使用した ACA ジョブまたは ACI）│
-│    • Layer 1 SA 内の Blob コンテナー（プロジェクト tfstate + ログ）│
-│    • DevBox プロジェクトプール                                     │
-│    • ACA Environment（プロジェクトごと、§5.4.1）                    │
-│    • Layer 2 Storage Account（プロジェクトスコープ RG、LRS デフォルト、レプリケーション選択可） │
-│    • プロジェクト Key Vault                                       │
-│    • Layer 2 プロジェクトリソースグループ                          │
+│    • プロジェクト RG + Layer 2 Storage Account + プロジェクト KV  │
+│    • プロジェクトスコープ UAMI + フェデレーション ID 資格情報     │
+│    • ACA Environment（プロジェクトごと、ADR-001）                 │
+│    • ランナー（プロジェクト ACA Env を使用した ACA ジョブ）       │
+│    • プロジェクトネットワークコンテキスト（サブネットまたは BYO）  │
+│    • DevBox プロジェクトプール + Network Connection               │
 │                                                                 │
 │  状態キー: "projects/<project_name>.terraform.tfstate" (Layer 1) │
-│  Layer 2 ストレージ: アプリ IaC 状態用にプロジェクトごとにプロビジョニング │
+│  読み取り: Tier 1 (devops-org-lz) の remote_state                 │
+├─────────────────────────────────────────────────────────────────┤
+│ Tier 3: リポジトリ + 環境 (devops-repo-lz)                        │
+│                                                                 │
+│  terraform init -backend-config=...                             │
+│  terraform apply                                                │
+│  読み取り: Tier 2 (devops-project-lz) の remote_state             │
+│  作成:                                                           │
+│    • VCS リポジトリ（GitHub リポジトリまたは ADO リポジトリ）      │
+│    • CI/CD ワークフロー / パイプライン（リポジトリプロファイル別）│
+│    • GitHub/ADO 環境（保護ルール付き）                            │
+│    • 環境 ↔ サブスクリプションバインディング（UAMI フェデレーション）│
+│    • リポジトリ別 ID（オプション、きめ細かい RBAC 用）           │
+│                                                                 │
+│  状態キー: "repos/<project>/<repo_name>.terraform.tfstate"       │
+│            (Layer 1 内)                                          │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -506,13 +523,14 @@ Layer 1 内には、Terraform 操作の順序と状態の依存関係を決定�
    - ブートストラップ自体 (`bootstrap.terraform.tfstate`)
    - プラットフォーム LZ (`devops-lz.terraform.tfstate`)
    - プロジェクトプロビジョニング (`projects/<project_name>.terraform.tfstate`)
+   - リポジトリプロビジョニング (`repos/<project>/<repo_name>.terraform.tfstate`)
 
-2. **Layer 2** = プロジェクトごとの状態ストレージ — プロジェクトごとに個別の Storage Account（`devops-project-lz/` 内の `project_github` / `project_azuredevops` によるプロジェクトプロビジョニング時に作成）で、以下を保持する:
+2. **Layer 2** = プロジェクトごとの状態ストレージ — プロジェクトごとに個別の Storage Account（`devops-project-lz` によるプロジェクトプロビジョニング時に作成）で、以下を保持する:
    - プロジェクトチーム独自のアプリケーション IaC 状態（例: プロジェクトがデプロイする Azure リソースの Terraform 状態）
 
 Layer 1 は DevOps LZ プラットフォームチームが管理する。Layer 2 はプロジェクトチームが独自のインフラストラクチャ・アズ・コード ワークフローで使用する。
 
-> **注記:** Layer 1 内の運用ティア（Tier 0 → Tier 1 → Tier 2）は `terraform apply` 操作の順序と状態の依存関係を決定する。Tier 0 は非常にまれにしか適用されない（基本的に 1 回）、Tier 1 は組織のプラットフォーム構成が変更された際に適用される、Tier 2 は新しいプロジェクトがオンボーディングまたは変更された際に適用される。3 つのティアすべてが **同じ** Layer 1 Storage Account に状態を格納する。Layer 2 は Tier 2 プロビジョニング中にプロジェクトごとに作成される別の Storage Account であり、プロジェクトチーム独自の利用を目的としている。
+> **注記:** Layer 1 内の運用ティア（Tier 0 → Tier 1 → Tier 2 → Tier 3）は `terraform apply` 操作の順序と状態の依存関係を決定する。Tier 0 は非常にまれにしか適用されない（基本的に 1 回）、Tier 1 は組織のプラットフォーム構成が変更された際に適用される、Tier 2 は新しいプロジェクトがオンボーディングまたは変更された際に適用される、Tier 3 はプロジェクト内のリポジトリや環境が追加/変更された際に適用される。4 つのティアすべてが **同じ** Layer 1 Storage Account に状態を格納する。Layer 2 は Tier 2 プロビジョニング中にプロジェクトごとに作成される別の Storage Account であり、プロジェクトチーム独自の利用を目的としている。
 
 ---
 
@@ -522,19 +540,19 @@ Layer 1 は DevOps LZ プラットフォームチームが管理する。Layer 2
 
 ターゲットアーキテクチャでは、既存のディレクトリと並行して **新しいディレクトリレイアウト** を導入する。移行期間中は両方のレイアウトが共存する。新設計の実装が完了したら、旧ディレクトリは削除できる。
 
-| レイヤー                  | 現在のディレクトリ                                                  | ターゲットディレクトリ     | 備考                                               |
-| ------------------------- | ------------------------------------------------------------------- | -------------------------- | -------------------------------------------------- |
-| Tier 0 — ブートストラップ | `infra/_bootstrap/`                                                 | `infra/bootstrap/`         | リネーム（アンダースコアプレフィックス削除）       |
-| Tier 1 — Org LZ           | `infra/devops/lz/`                                                  | `infra/devops-org-lz/`     | フラットディレクトリ（`devops/` 配下のネスト廃止） |
-| Tier 2 — Project LZ       | `infra/devops/project_github/`, `infra/devops/project_azuredevops/` | `infra/devops-project-lz/` | 別リポジトリからの **Git サブモジュール**          |
-| セットアップ              | `infra/_setup_subscriptions/`                                       | _(変更なし)_               |                                                    |
-| 共有モジュール            | `infra/modules/`                                                    | _(変更なし)_               | Org LZ と Project LZ の両方が利用                  |
+| レイヤー                  | 現在のディレクトリ                                                  | ターゲットディレクトリ     | 備考                                                       |
+| ------------------------- | ------------------------------------------------------------------- | -------------------------- | ---------------------------------------------------------- |
+| Tier 0 — ブートストラップ | `infra/_bootstrap/`                                                 | `infra/bootstrap/`         | リネーム（アンダースコアプレフィックス削除）               |
+| Tier 1 — Org LZ           | `infra/devops/lz/`                                                  | `infra/devops-org-lz/`     | フラットディレクトリ（`devops/` 配下のネスト廃止）         |
+| Tier 2 — Project LZ       | `infra/devops/project_github/`, `infra/devops/project_azuredevops/` | `infra/devops-project-lz/` | 別リポジトリからの **Git サブモジュール**                  |
+| Tier 3 — Repo LZ          | _(プロジェクトモジュール内)_                                        | `infra/devops-repo-lz/`    | **Git サブモジュール** — リポジトリ + 環境プロビジョニング |
+| セットアップ              | `infra/_setup_subscriptions/`                                       | _(変更なし)_               |                                                            |
+| 共有モジュール            | `infra/modules/`                                                    | _(変更なし)_               | Org LZ、Project LZ、Repo LZ で使用                         |
 
-**重要な設計決定:** `infra/devops-project-lz/` は別リポジトリを参照する **Git サブモジュール** である。これにより:
+**重要な設計決定:**
 
-- **GitOps ガバナンスリポジトリ** が同じサブモジュールを参照してプロジェクトプロビジョニングワークフローを実行できる。
-- 独立バージョニング — Project LZ コードは Org LZ の変更とは独立してリリース・テスト可能。
-- クリーンな分離 — プロジェクトプロビジョニング IaC は自己完結型であり、Org LZ のソースツリーに依存しない。
+- `infra/devops-project-lz/` は別リポジトリを参照する **Git サブモジュール** である。独立バージョニングとマルチリポジトリ利用を可能にする。
+- `infra/devops-repo-lz/` は **Git サブモジュール**（同一または別リポジトリ）であり、リポジトリと環境のプロビジョニングを独自の Terraform 状態を持つ別の apply として処理する。
 
 ```text
 infra/
@@ -555,26 +573,49 @@ infra/
 │
 ├── devops-project-lz/                  # Tier 2: プロジェクトごとのリソース          [新規 — git サブモジュール]
 │   ├── project_github/                 # GitHub プロジェクト用ルートモジュール
-│   │   ├── _variables.tf               # repositories リスト、network_mode を追加
+│   │   ├── _variables.tf               # プロジェクト ID、network_mode
 │   │   ├── _variables.network.tf       # BYO VNet 入力
-│   │   ├── _variables.repositories.tf  # マルチリポジトリ定義
-│   │   ├── github.tf                   # repositories をイテレーション
-│   │   ├── github.workflow.tf          # リポジトリごとのワークフロー生成
-│   │   ├── uami.tf                     # リポジトリ × 環境ごとの ID
-│   │   ├── uami.federation.tf
+│   │   ├── uami.tf                     # プロジェクトスコープ UAMI
+│   │   ├── uami.federation.tf          # OIDC フェデレーション
+│   │   ├── state.tf                    # Layer 2 SA + プロジェクト KV + プロジェクト RG
+│   │   ├── aca_env.tf                  # ACA Environment（プロジェクトランナー）
 │   │   ├── network.tf                  # BYO VNet データ参照と検証
 │   │   └── ...
 │   │
 │   ├── project_azuredevops/            # Azure DevOps プロジェクト用ルートモジュール
-│   │   ├── _variables.tf               # repositories リスト、network_mode を追加
-│   │   ├── _variables.repositories.tf  # マルチリポジトリ定義
+│   │   ├── _variables.tf               # プロジェクト ID、network_mode
 │   │   └── ...                         # (該当部分は project_github と同様)
 │   │
-│   └── modules/                        # プロジェクトプロビジョニング用共有モジュール
-│       ├── github/
-│       ├── azure_devops/
-│       ├── github_workflows/
-│       └── ...
+│   └── modules/                        # プロジェクトプロビジョニング用共有サブモジュール
+│       ├── project_state/              # Layer 2 SA + プロジェクト KV + プロジェクト RG
+│       ├── project_identity/           # 7 UAMI + フェデレーション資格情報 + RBAC
+│       ├── project_network/            # サブネットスライス (platform) または BYO 検証
+│       ├── aca_env/                    # ACA Environment
+│       ├── devbox_project/             # DevCenter Project + Pool + Network Connection
+│       └── runner/                     # ACA ジョブ定義 (GitHub または ADO)
+│
+├── devops-repo-lz/                     # Tier 3: リポジトリ + 環境プロビジョニング  [新規 — git サブモジュール]
+│   ├── repo_github/                    # GitHub リポジトリ + 環境用ルートモジュール
+│   │   ├── _variables.tf               # リポジトリ名、プロファイル、環境
+│   │   ├── _variables.environments.tf  # 環境 → サブスクリプションマッピング
+│   │   ├── repo.tf                     # GitHub リポジトリ作成
+│   │   ├── workflows.tf                # CI/CD ワークフロー生成（プロファイル駆動）
+│   │   ├── environments.tf             # GitHub 環境 + 保護ルール
+│   │   ├── identity.tf                 # オプションのリポジトリ別 UAMI
+│   │   └── ...
+│   │
+│   ├── repo_azuredevops/               # ADO リポジトリ + 環境用ルートモジュール
+│   │   ├── _variables.tf               # リポジトリ名、プロファイル、環境
+│   │   ├── _variables.environments.tf  # 環境 → サブスクリプションマッピング
+│   │   ├── repo.tf                     # ADO リポジトリ作成
+│   │   ├── pipelines.tf                # CI/CD パイプライン生成
+│   │   ├── environments.tf             # ADO 環境 + 承認
+│   │   └── ...
+│   │
+│   └── modules/                        # リポジトリプロビジョニング用共有サブモジュール
+│       ├── project_repo/               # 抽象: リポジトリ作成 (GH/ADO ディスパッチ)
+│       ├── environment/                # 抽象: 環境作成 (GH/ADO ディスパッチ)
+│       └── runner/                     # 抽象: ランナー登録 (GH/ADO)
 │
 ├── devops/                             # (旧レイアウト — 移行中は保持)
 │   ├── lz/
@@ -588,57 +629,98 @@ infra/
 
 ### 4.2 Project LZ リポジトリ（サブモジュール参照元）
 
-`infra/devops-project-lz/` ディレクトリは、プロジェクトのプロビジョニングに必要なすべてを含む **別リポジトリ** を参照する Git サブモジュールである。このリポジトリがプロジェクトレベル IaC の唯一の信頼できるソースとなる:
+`infra/devops-project-lz/` ディレクトリは、プロジェクトのインフラ（ID、ネットワーク、ランナー、状態ストレージ）のプロビジョニングに必要なすべてを含む **別リポジトリ** を参照する Git サブモジュールである。このリポジトリがプロジェクトレベル IaC の唯一の信頼できるソースとなる:
 
 ```text
 <org>/<devops-project-lz-repo>/         # プロジェクトプロビジョニング用の別リポジトリ
 ├── project_github/                     # GitHub プロジェクト用 Terraform ルートモジュール
 │   ├── _variables.tf
-│   ├── _variables.repositories.tf
 │   ├── _variables.network.tf
-│   ├── github.tf
-│   ├── uami.tf
+│   ├── uami.tf                         # プロジェクトスコープ UAMI
+│   ├── state.tf                        # Layer 2 SA + プロジェクト KV + プロジェクト RG
+│   ├── aca_env.tf                      # ACA Environment
+│   ├── network.tf
 │   └── ...
 ├── project_azuredevops/                # Azure DevOps プロジェクト用 Terraform ルートモジュール
 │   ├── _variables.tf
-│   ├── _variables.repositories.tf
 │   └── ...
-├── modules/                            # プロジェクトプロビジョニング用共有 Terraform モジュール
-│   ├── github/
-│   ├── azure_devops/
-│   ├── github_workflows/
-│   └── ...
+├── modules/                            # プロジェクトプロビジョニング用共有サブモジュール
+│   ├── project_state/                  # Layer 2 SA + プロジェクト KV + プロジェクト RG
+│   ├── project_identity/               # 7 UAMI + フェデレーション資格情報 + RBAC
+│   ├── project_network/                # サブネットスライス (platform) または BYO 検証
+│   ├── aca_env/                        # ACA Environment
+│   ├── devbox_project/                 # DevCenter Project + Pool + Network Connection
+│   └── runner/                         # ACA ジョブ定義 (GitHub または ADO)
 └── README.md
 ```
 
-### 4.3 GitOps ガバナンスリポジトリ
+### 4.3 Repo LZ リポジトリ（サブモジュール参照元）
 
-**GitOps ガバナンスリポジトリ**（Issue 駆動のプロジェクト/リポジトリ オンボーディング用 — [ADR-007](./adr/ADR-007-gitops-onboarding.ja.md) 参照）は、同じ Project LZ リポジトリを Git サブモジュールとして参照する。これにより、プロジェクトプロビジョニングコードの単一の信頼できるソースが保証される。
+`infra/devops-repo-lz/` ディレクトリは、プロジェクト内のリポジトリと環境のプロビジョニングに必要なすべてを含むリポジトリを参照する Git サブモジュールである。この分離により:
+
+- **独立したライフサイクル** — プロジェクトレベルの Terraform を再適用せずにリポジトリ/環境を追加できる。
+- **きめ細かい状態** — 各リポジトリが独自の tfstate を持ち、変更の影響範囲を縮小。
+- **チーム委任** — プロジェクトチームがより狭い権限でリポジトリ/環境を管理できる。
+
+```text
+<org>/<devops-repo-lz-repo>/           # リポジトリ + 環境プロビジョニング用の別リポジトリ
+├── repo_github/                       # GitHub リポジトリ用 Terraform ルートモジュール
+│   ├── _variables.tf
+│   ├── _variables.environments.tf
+│   ├── repo.tf                        # GitHub リポジトリ + ブランチ保護
+│   ├── workflows.tf                   # CI/CD ワークフロー生成
+│   ├── environments.tf                # GitHub 環境 + 保護ルール
+│   ├── identity.tf                    # オプションのリポジトリ別 UAMI
+│   └── ...
+├── repo_azuredevops/                  # ADO リポジトリ用 Terraform ルートモジュール
+│   ├── _variables.tf
+│   ├── _variables.environments.tf
+│   ├── repo.tf                        # ADO リポジトリ + ブランチポリシー
+│   ├── pipelines.tf                   # CI/CD パイプライン生成
+│   ├── environments.tf                # ADO 環境 + 承認
+│   └── ...
+├── modules/                           # リポジトリプロビジョニング用共有サブモジュール
+│   ├── project_repo/                  # 抽象: リポジトリ作成 (GH/ADO ディスパッチ)
+│   ├── environment/                   # 抽象: 環境作成 (GH/ADO ディスパッチ)
+│   └── runner/                        # 抽象: ランナー登録 (GH/ADO)
+└── README.md
+```
+
+### 4.4 GitOps ガバナンスリポジトリ
+
+**GitOps ガバナンスリポジトリ**（Issue 駆動のプロジェクト/リポジトリ オンボーディング用 — [ADR-007](./adr/ADR-007-gitops-onboarding.ja.md) 参照）は、Project LZ と Repo LZ の両リポジトリを Git サブモジュールとして参照する。これにより、すべてのプロビジョニングコードの単一の信頼できるソースが保証される。
 
 ```text
 <org>/<gitops-governance-repo>/         # GitOps オンボーディング用の独立リポジトリ
 ├── .github/
 │   ├── CODEOWNERS                      # プロジェクト領域ごとの承認チームを定義
 │   ├── ISSUE_TEMPLATE/
-│   │   └── project-request.yaml        # 新規プロジェクトリクエスト用の Issue テンプレート
+│   │   ├── project-request.yaml        # 新規プロジェクトリクエスト用の Issue テンプレート
+│   │   └── repo-request.yaml           # 新規リポジトリリクエスト用の Issue テンプレート
 │   └── workflows/
 │       ├── project-request-to-pr.yaml  # Issue を PR（YAML 定義付き）に変換
-│       └── project-create.yaml         # PR マージ時: terraform apply を実行
+│       ├── project-create.yaml         # PR マージ時: terraform apply を実行（プロジェクト）
+│       └── repo-create.yaml            # PR マージ時: terraform apply を実行（リポジトリ）
 │
 ├── projects/                           # プロジェクト定義（信頼できる情報源）
-│   ├── contoso-ecommerce.yaml          # プロジェクト定義（リポジトリ、サブスクリプション、ネットワーク等）
+│   ├── contoso-ecommerce.yaml          # プロジェクト定義（ID、ネットワーク等）
 │   ├── contoso-payments.yaml
 │   └── ...
 │
-├── infra/                              # Git サブモジュール → <org>/<devops-project-lz-repo>
-│   ├── project_github/                 # (サブモジュールから)
-│   ├── project_azuredevops/            # (サブモジュールから)
-│   └── modules/                        # (サブモジュールから)
+├── repos/                              # リポジトリ定義（信頼できる情報源）
+│   ├── contoso-ecommerce/
+│   │   ├── repo-infra.yaml             # リポジトリ定義（プロファイル、環境）
+│   │   └── repo-app.yaml
+│   └── ...
+│
+├── infra/
+│   ├── devops-project-lz/              # Git サブモジュール → <org>/<devops-project-lz-repo>
+│   └── devops-repo-lz/                 # Git サブモジュール → <org>/<devops-repo-lz-repo>
 │
 └── README.md
 ```
 
-> **注記:** **DevOps Landing Zone リポジトリ** (`infra/devops-project-lz/`) と **GitOps ガバナンスリポジトリ** (`infra/`) の両方が、**同じ** Project LZ リポジトリを Git サブモジュールとして参照する。これにより、直接 `terraform apply` パスと GitOps 駆動オンボーディングパスの両方で、プロジェクトプロビジョニングコードが常に一貫することが保証される。
+> **注記:** **DevOps Landing Zone リポジトリ**、**GitOps ガバナンスリポジトリ**、および他の利用リポジトリは、**同じ** Project LZ と Repo LZ リポジトリを Git サブモジュールとして参照する。これにより、すべてのパス（直接 `terraform apply` と GitOps 駆動オンボーディング）でプロビジョニングコードが常に一貫することが保証される。
 
 ---
 
@@ -676,31 +758,33 @@ infra/
 1. **フェーズ 0 — ディレクトリ再構成:**
    - `infra/bootstrap/` を作成する（`infra/_bootstrap/` の新レイアウト）。
    - `infra/devops-org-lz/` を作成する（`infra/devops/lz/` の新レイアウト）。
-   - Project LZ リポジトリを作成し、`infra/devops-project-lz/` を Git サブモジュールとして追加する（`infra/devops/project_github/` + `project_azuredevops/` の新レイアウト）。
+   - Project LZ リポジトリを作成し、`infra/devops-project-lz/` を Git サブモジュールとして追加する。
+   - Repo LZ リポジトリを作成し、`infra/devops-repo-lz/` を Git サブモジュールとして追加する。
    - 移行中は旧ディレクトリを保持する — 新レイアウトの検証完了後に削除。
 
 2. **フェーズ 1 — 非破壊的な追加:**
-   - デフォルト `[]` で `repositories` 変数を追加する。
    - デフォルト値で `network_mode` / `byo_vnet` 変数を追加する。
    - Org LZ にガバナンス変数と出力を追加する（GitHub + Azure DevOps）。
    - Getting Started ガイドに 2 層ブートストラップモデルを文書化する。
    - 既存の tfvars ファイルの変更は不要。
 
-3. **フェーズ 2 — モジュールのリファクタリング:**
-   - `modules/github` をリポジトリのリストをイテレーションするようにリファクタリングする。
-   - `modules/github_workflows` をプロファイルごとのワークフローを生成するようにリファクタリングする。
-   - `modules/azure_devops` をマルチリポジトリサポート向けにリファクタリングする。
+3. **フェーズ 2 — モジュールのリファクタリング（Project LZ）:**
+   - 抽象サブモジュール（`project_state`、`project_identity`、`project_network`、`aca_env`、`devbox_project`、`runner`）で `devops-project-lz` を実装する。
    - Org LZ に governance.github.tf と governance.azuredevops.tf を追加する。
-   - 既存の単一リポジトリプロジェクトは `_locals.tf` のフォールバックにより引き続き動作する。
 
-4. **フェーズ 3 — GitOps オンボーディング:**
+4. **フェーズ 3 — Repo LZ の分離:**
+   - 抽象サブモジュール（`project_repo`、`environment`、`runner`）で `devops-repo-lz` を実装する。
+   - 旧 `project_github` からリポジトリ + 環境プロビジョニングを `devops-repo-lz` に抽出する。
+   - 各リポジトリが独自の tfstate キー（`repos/<project>/<repo_name>.terraform.tfstate`）を持つ。
+
+5. **フェーズ 4 — GitOps オンボーディング:**
    - GitOps ガバナンスリポジトリテンプレートを作成する。
    - プロジェクトおよびリポジトリリクエスト用の Issue テンプレートを追加する。
-   - プロビジョニングワークフロー（Issue から PR、プロジェクト作成）を追加する。
-   - GitOps ガバナンスリポジトリに Project LZ リポジトリを Git サブモジュールとして追加する。
+   - プロビジョニングワークフロー（Issue から PR、プロジェクト作成、リポジトリ作成）を追加する。
+   - GitOps ガバナンスリポジトリに Project LZ と Repo LZ の両リポジトリを Git サブモジュールとして追加する。
    - GitOps オンボーディングワークフローを文書化する。
 
-5. **フェーズ 4 — ドキュメントと例:**
+6. **フェーズ 4 — ドキュメントと例:**
    - マルチリポジトリの例示 tfvars を追加する。
    - BYO VNet の例示 tfvars を追加する。
    - 両モードのアーキテクチャ図を追加する。
