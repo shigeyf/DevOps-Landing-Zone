@@ -89,9 +89,12 @@ The Org LZ is a single root module that uses existing and new sub-modules to pro
 | -------------------- | --------------------------------------------------------- | ------------------ | -------- |
 | `vnet`               | Platform VNet + subnets + NAT Gateway + Private DNS zones | Yes                | Existing |
 | `acr`                | Azure Container Registry + image build tasks              | Yes                | Existing |
-| `resource_providers` | Azure resource provider registrations                     | Yes                | Existing |
 | `org_governance`     | Org-level rulesets, runner groups, agent pools            | No (dispatches)    | New      |
 | `devcenter`          | Dev Center + Dev Box Definitions (org catalog)            | Yes                | New      |
+
+> [!NOTE]
+> `resource_providers` is intentionally **not** modularized in the target design.
+> Resource provider registrations are managed separately (outside reusable sub-modules) to avoid cross-project state ownership conflicts.
 
 ### `vnet`
 
@@ -123,16 +126,6 @@ Creates the shared container registry for runner images.
 | Agents RG                | `azurerm_resource_group`          | Hosts ACR, Log Analytics, container-run UAMI                         |
 | Log Analytics Workspace  | `azurerm_log_analytics_workspace` | Centralized logs/metrics for runner ACA Environments across projects |
 | Container-Run UAMI       | `azurerm_user_assigned_identity`  | Identity used by runner containers to pull from ACR and write logs   |
-
-### `resource_providers`
-
-Registers required Azure resource providers.
-
-**Deployed resources:**
-
-| Resource                 | Terraform Type                           | Purpose                                                                 |
-| ------------------------ | ---------------------------------------- | ----------------------------------------------------------------------- |
-| Azure Resource Providers | `azurerm_resource_provider_registration` | Enables required APIs (ContainerRegistry, ContainerApp, KeyVault, etc.) |
 
 ### `org_governance` — Abstract Module
 
@@ -460,9 +453,9 @@ modules/<module_name>/
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ devops-org-lz (Layer 1 Root Module)                                      │
 │                                                                         │
-│  ┌──────┐ ┌─────┐ ┌──────────────────┐ ┌───────────────┐ ┌──────────┐ │
-│  │ vnet │ │ acr │ │resource_providers│ │org_governance │ │devcenter │ │
-│  └──────┘ └─────┘ └──────────────────┘ └───────────────┘ └──────────┘ │
+│  ┌──────┐ ┌─────┐ ┌───────────────┐ ┌──────────┐                      │
+│  │ vnet │ │ acr │ │org_governance │ │devcenter │                      │
+│  └──────┘ └─────┘ └───────────────┘ └──────────┘                      │
 └─────────────────────────────────────────────────────────────────────────┘
                               │ remote_state
                               ▼
