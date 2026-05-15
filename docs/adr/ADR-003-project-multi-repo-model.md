@@ -112,14 +112,14 @@ Profiles define the **workflow shape** for a repository. They are defined in the
 
 #### Where identities are created
 
-UAMIs are **created at project deployment time** (Tier 2), not pre-registered at the Platform LZ level. The Platform LZ (Tier 1) only provides the **identity resource group** where UAMIs are placed.
+UAMIs are **created at project deployment time** (Layer 2), not pre-registered at the Platform LZ level. UAMIs are placed in the **Project Resource Group** (created by the `project_state` sub-module at Layer 2), not in a shared org-level resource group.
 
 The subscription-to-environment mapping is defined in each project's `terraform.tfvars` via the `subscriptions` variable. The Platform LZ does **not** maintain a global subscription registry. Each project declares which Azure subscriptions it needs for its environments, and the project module creates UAMIs and federated identity credentials accordingly.
 
 **Identity model:** The `github_workflows` module generates a `github_environments` map keyed by `{branch_key}-{job_type}` (e.g., `feat-plan`, `dev-apply`, `stg-plan`, `prod-apply`). The project module creates one UAMI per entry — 7 UAMIs per project (4 environments × plan + 3 environments × apply, since `features` has no `apply` job). Each UAMI receives a single federated identity credential for GitHub OIDC.
 
 ```text
-Platform LZ (Tier 1)                Project (Tier 2)
+Platform LZ (Layer 1)               Project (Layer 2)
 ┌─────────────────────┐             ┌──────────────────────────────┐
 │ Provides:           │             │ Creates (in Project RG):     │
 │ • Shared infra      │────────────►│ • 7 UAMIs (env × job type)   │

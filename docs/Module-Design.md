@@ -605,8 +605,8 @@ modules/<module_name>/
 
 1. Implement `project_state` + `project_identity` + `project_network` first (pure Azure, no VCS dependency).
 2. Implement `aca_env` + `devbox_project` + `runner` (project-level compute).
-3. Implement `project_repo` + `environment` (abstract VCS modules for Tier 3).
-4. Implement `org_governance` (abstract governance for Tier 1).
+3. Implement `project_repo` + `environment` (abstract VCS modules for Layer 3).
+4. Implement `org_governance` (abstract governance for Layer 1).
 5. Compose into root modules (`project_github`, `project_azuredevops`, `repo_github`, `repo_azuredevops`).
 
 ---

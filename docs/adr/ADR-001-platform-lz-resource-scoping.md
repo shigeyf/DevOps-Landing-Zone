@@ -11,15 +11,15 @@ The Platform Landing Zone (`devops/lz`) owns organization-shared infrastructure.
 
 ---
 
-### 5.1 Role: Platform Bootstrap (Tier 1 within Layer 1)
+### 5.1 Role: Platform Bootstrap (Layer 1)
 
-The Landing Zone serves as the **organizational platform bootstrap**. It is the first Terraform layer applied after Tier 0 (`_bootstrap`), and it creates all shared Azure and VCS resources that projects depend on.
+The Landing Zone serves as the **organizational platform bootstrap**. It is the first Terraform layer applied after Layer 0 (`bootstrap`), and it creates all shared Azure and VCS resources that projects depend on.
 
 Operationally:
 
-- **Tier 0** (`_bootstrap`) is applied once and very rarely updated. Creates the Layer 1 Storage Account.
-- **Tier 1** (`devops/lz`) is applied whenever the organization's platform configuration changes (e.g., new subnets, new DevBox definitions, governance policy changes).
-- Both tiers store their state in the same Layer 1 Storage Account, under different state keys.
+- **Layer 0** (`bootstrap`) is applied once and very rarely updated. Creates the Layer 1 Storage Account.
+- **Layer 1** (`devops-org-lz`) is applied whenever the organization's platform configuration changes (e.g., new subnets, new DevBox definitions, governance policy changes).
+- Both layers store their state in the same Layer 1 Storage Account, under different state keys.
 
 ### 5.2 Platform LZ resource review — org vs. project scoping
 
@@ -55,7 +55,7 @@ The most significant finding is that the **ACA Environment** (Azure Container Ap
    - For `network_mode = "byo"`: the project module creates its ACA Environment in the BYO VNet's ACA subnet (subnet ID provided by user input).
 
 ```text
-Platform LZ (Tier 1)                    Project (Tier 2)
+Platform LZ (Layer 1)                   Project (Layer 2)
 ┌───────────────────────────┐           ┌──────────────────────────────────┐
 │ Provides (shared):        │           │ Creates (per project):           │
 │ • ACR (runner images)     │──────────►│ • ACA Environment               │
@@ -84,7 +84,6 @@ The original design placed project UAMIs in a shared org-level Identity RG. This
 ### 5.3 What stays the same (revised)
 
 - Bootstrap resources (Storage Account, Key Vault)
-- Identity resource group (shared container for project UAMIs)
 - Agents resource group for org-scoped resources (ACR, Log Analytics, container-run UAMI) — the ACA Environment moves out of this RG at the project level per Section 5.4.1
 - Network resource group and platform-managed VNet creation
 - Dev Center and DevBox definitions

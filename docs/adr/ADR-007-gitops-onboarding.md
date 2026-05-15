@@ -57,7 +57,7 @@ The governance repo holds project definitions, the workflows that provision them
 ```text
 # GitHub Enterprise organization layout:
 <governance-org>/
-├── devops-landing-zone/           # Platform LZ IaC repo (Tier 0 + Tier 1)
+├── devops-landing-zone/           # Platform LZ IaC repo (Layer 0 + Layer 1)
 └── devops-gitops/                 # GitOps governance repo (project IaC, template repo)
 ```
 

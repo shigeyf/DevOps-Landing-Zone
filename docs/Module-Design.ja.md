@@ -605,8 +605,8 @@ modules/<module_name>/
 
 1. まず `project_state` + `project_identity` + `project_network` を実装（純粋な Azure、VCS 依存なし）。
 2. `aca_env` + `devbox_project` + `runner` を実装（プロジェクトレベルのコンピュート）。
-3. `project_repo` + `environment` を実装（Tier 3 用の抽象 VCS モジュール）。
-4. `org_governance` を実装（Tier 1 用の抽象ガバナンス）。
+3. `project_repo` + `environment` を実装（Layer 3 用の抽象 VCS モジュール）。
+4. `org_governance` を実装（Layer 1 用の抽象ガバナンス）。
 5. ルートモジュール（`project_github`、`project_azuredevops`、`repo_github`、`repo_azuredevops`）に合成。
 
 ---

@@ -57,7 +57,7 @@ GitOps ガバナンスリポジトリは **独立して設定される**（Terra
 ```text
 # GitHub Enterprise 組織レイアウト:
 <governance-org>/
-├── devops-landing-zone/           # プラットフォーム LZ IaC リポジトリ (Tier 0 + Tier 1)
+├── devops-landing-zone/           # プラットフォーム LZ IaC リポジトリ (Layer 0 + Layer 1)
 └── devops-gitops/                 # GitOps ガバナンスリポジトリ (プロジェクト IaC、テンプレートリポジトリ)
 ```
 
