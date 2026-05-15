@@ -4,35 +4,36 @@
 
 > **ステータス:** ドラフト — 計画フェーズ。
 >
-> **目的:** 3 層 DevOps Landing Zone デプロイメントモデル用の再利用可能なサブモジュール（ビルディングブロック）設計を定義する。各デプロイメントレイヤー（`devops-org-lz`、`devops-project-lz`、`devops-repo-lz`）は、統一インターフェースの背後にリソースと VCS 固有の実装をカプセル化する抽象的なドメインレベルのサブモジュールで構成される。
+> **目的:** 4 層 DevOps Landing Zone デプロイメントモデル用の再利用可能なサブモジュール（ビルディングブロック）設計を定義する。各デプロイメントレイヤー（`bootstrap`、`devops-org-lz`、`devops-project-lz`、`devops-repo-lz`）は、統一インターフェースの背後にリソースと VCS 固有の実装をカプセル化する抽象的なドメインレベルのサブモジュールで構成される。
 
 ---
 
 ## 目次
 
-1. [3 層デプロイメントモデル](#1-3-層デプロイメントモデル)
+1. [4 層デプロイメントモデル](#1-4-層デプロイメントモデル)
 2. [モジュール設計原則](#2-モジュール設計原則)
-3. [レイヤー 1: 組織 LZ サブモジュール (devops-org-lz)](#3-レイヤー-1-組織-lz-サブモジュール-devops-org-lz)
-4. [レイヤー 2: プロジェクト LZ サブモジュール (devops-project-lz)](#4-レイヤー-2-プロジェクト-lz-サブモジュール-devops-project-lz)
-5. [レイヤー 3: リポジトリ LZ サブモジュール (devops-repo-lz)](#5-レイヤー-3-リポジトリ-lz-サブモジュール-devops-repo-lz)
-6. [抽象モジュールパターン](#6-抽象モジュールパターン)
-7. [モジュール構成図](#7-モジュール構成図)
-8. [実装計画](#8-実装計画)
+3. [レイヤー 0: ブートストラップサブモジュール (bootstrap)](#3-レイヤー-0-ブートストラップサブモジュール-bootstrap)
+4. [レイヤー 1: 組織 LZ サブモジュール (devops-org-lz)](#4-レイヤー-1-組織-lz-サブモジュール-devops-org-lz)
+5. [レイヤー 2: プロジェクト LZ サブモジュール (devops-project-lz)](#5-レイヤー-2-プロジェクト-lz-サブモジュール-devops-project-lz)
+6. [レイヤー 3: リポジトリ LZ サブモジュール (devops-repo-lz)](#6-レイヤー-3-リポジトリ-lz-サブモジュール-devops-repo-lz)
+7. [抽象モジュールパターン](#7-抽象モジュールパターン)
+8. [モジュール構成図](#8-モジュール構成図)
+9. [実装計画](#9-実装計画)
 
 ---
 
-## 1. 3 層デプロイメントモデル
+## 1. 4 層デプロイメントモデル
 
-DevOps Landing Zone は、ブートストラップの上に重ねられた 3 つの個別の Terraform デプロイメント（それぞれ独自の状態を持つ）を使用する:
+DevOps Landing Zone は **4 つ** の個別の Terraform デプロイメント（それぞれ独自の状態を持つ）を使用する。Layer 0（ブートストラップ）は状態バックエンドを作成する基盤であり、Layer 1〜3 がその上に構築される:
 
-| Tier | デプロイメント        | ディレクトリ               | スコープ                                                       | 状態キー                                   |
-| ---- | --------------------- | -------------------------- | -------------------------------------------------------------- | ------------------------------------------ |
-| 0    | ブートストラップ      | `infra/bootstrap/`         | Layer 1 Storage Account + Key Vault                            | `bootstrap.terraform.tfstate`              |
-| 1    | **devops-org-lz**     | `infra/devops-org-lz/`     | 組織全体の共有インフラ                                         | `devops-lz.terraform.tfstate`              |
-| 2    | **devops-project-lz** | `infra/devops-project-lz/` | プロジェクトごとのインフラ（ID、ランナー、状態、ネットワーク） | `projects/<name>.terraform.tfstate`        |
-| 3    | **devops-repo-lz**    | `infra/devops-repo-lz/`    | リポジトリごとのリソース + 環境                                | `repos/<project>/<repo>.terraform.tfstate` |
+| Layer | デプロイメント        | ディレクトリ               | スコープ                                                       | 状態キー                                   |
+| ----- | --------------------- | -------------------------- | -------------------------------------------------------------- | ------------------------------------------ |
+| 0     | **ブートストラップ**  | `infra/bootstrap/`         | Layer 1 Storage Account + Key Vault + CMK + UAMI               | `bootstrap.terraform.tfstate`              |
+| 1     | **devops-org-lz**     | `infra/devops-org-lz/`     | 組織全体の共有インフラ                                         | `devops-lz.terraform.tfstate`              |
+| 2     | **devops-project-lz** | `infra/devops-project-lz/` | プロジェクトごとのインフラ（ID、ランナー、状態、ネットワーク） | `projects/<name>.terraform.tfstate`        |
+| 3     | **devops-repo-lz**    | `infra/devops-repo-lz/`    | リポジトリごとのリソース + 環境                                | `repos/<project>/<repo>.terraform.tfstate` |
 
-各レイヤーは `terraform_remote_state` を通じて前のレイヤーの出力を読み取る。
+各レイヤーは `terraform_remote_state` を通じて前のレイヤーの出力を読み取る。Layer 0 は一度だけ適用される（再適用はまれ）。Layer 1〜3 は通常の運用サイクルに従う。
 
 ---
 
@@ -52,17 +53,76 @@ DevOps Landing Zone は、ブートストラップの上に重ねられた 3 つ
 
 ---
 
-## 3. レイヤー 1: 組織 LZ サブモジュール (devops-org-lz)
+## 3. レイヤー 0: ブートストラップサブモジュール (bootstrap)
+
+ブートストラップレイヤーは DevOps Landing Zone 全体の基盤となる状態バックエンドとシークレットストアを作成する。組織ごとに **1 回** だけ適用される（再適用はまれ）。ローカル状態ファイルを使用し、作成した Storage Account に移行する。
+
+| サブモジュール | 責務                                          | プラットフォーム非依存? | ステータス |
+| -------------- | --------------------------------------------- | ----------------------- | ---------- |
+| `bootstrap`    | RG + Storage Account + Key Vault + CMK + UAMI | はい                    | 既存       |
+
+### `bootstrap`
+
+Layer 1 状態バックエンドとその保護チェーンを作成する。
+
+**デプロイされるリソース:**
+
+| リソース                          | Terraform タイプ                 | 目的                                                                                     |
+| --------------------------------- | -------------------------------- | ---------------------------------------------------------------------------------------- |
+| ブートストラップ リソースグループ | `azurerm_resource_group`         | 全ブートストラップリソースのコンテナ。Layer 1 状態バックエンドのライフサイクルアンカー   |
+| Layer 1 Storage Account           | `azurerm_storage_account`        | bootstrap、Org LZ、Project LZ、Repo LZ の tfstate を格納（blob バージョニング + 不変性） |
+| `tfstate` blob コンテナ           | `azurerm_storage_container`      | モジュールごとの tfstate コンテナ（bootstrap、lz、project\_\*、repos/\*）                |
+| ブートストラップ Key Vault        | `azurerm_key_vault`              | Layer 1 SA を暗号化する CMK を保持。パージ保護、RBAC 認可                                |
+| `tfbackend_cmk` キー              | `azurerm_key_vault_key`          | Layer 1 Storage Account を暗号化する RSA キー（tfstate の多層防御）                      |
+| ブートストラップ UAMI             | `azurerm_user_assigned_identity` | CMK アクセス権を付与された ID（`Storage Account → Key Vault` 暗号化チェーン）            |
+| `azurerm.tfbackend` 設定ファイル  | `local_file`                     | すべての下流レイヤー用に生成された Terraform バックエンド設定テンプレート                |
+
+**出力:** `storage_account_name`、`storage_account_id`、`key_vault_id`、`key_vault_uri`、`resource_group_name`、`bootstrap_config_json`（すべての下流レイヤーで消費される）。
+
+---
+
+## 4. レイヤー 1: 組織 LZ サブモジュール (devops-org-lz)
 
 Org LZ は、既存および新規のサブモジュールを使用して組織全体の共有インフラをプロビジョニングする単一のルートモジュールである。
 
 | サブモジュール       | 責務                                                                       | プラットフォーム非依存? | ステータス |
 | -------------------- | -------------------------------------------------------------------------- | ----------------------- | ---------- |
-| `bootstrap`          | RG + Storage Account + Key Vault + CMK + UAMI（Layer 1 状態）              | はい                    | 既存       |
 | `vnet`               | プラットフォーム VNet + サブネット + NAT Gateway + プライベート DNS ゾーン | はい                    | 既存       |
 | `acr`                | Azure Container Registry + イメージビルドタスク                            | はい                    | 既存       |
 | `resource_providers` | Azure リソースプロバイダー登録                                             | はい                    | 既存       |
 | `org_governance`     | 組織レベルのルールセット、ランナーグループ、エージェントプール             | いいえ（ディスパッチ）  | 新規       |
+| `devcenter`          | Dev Center + Dev Box Definitions（組織カタログ）                           | はい                    | 新規       |
+
+### `vnet`
+
+プラットフォーム管理 VNet と関連ネットワークインフラを作成。
+
+**デプロイされるリソース:**
+
+| リソース                                     | Terraform タイプ           | 目的                                                                         |
+| -------------------------------------------- | -------------------------- | ---------------------------------------------------------------------------- |
+| プラットフォーム LZ VNet                     | `azurerm_virtual_network`  | プラットフォームのハブ VNet。PE、ランナーサブネット、DevBox サブネットを格納 |
+| サブネット（ランナー、DevBox、PE 等）        | `azurerm_subnet`           | プロジェクト専用アドレススライスとプラットフォーム共有サービススライス       |
+| NAT Gateway（設定時）                        | `azurerm_nat_gateway`      | ランナージョブの決定論的エグレス（IP 許可リスト登録可）                      |
+| NAT Gateway パブリック IP                    | `azurerm_public_ip`        | NAT Gateway に割り当てられた静的パブリック IP                                |
+| プライベート DNS ゾーン（blob、vault 等）    | `azurerm_private_dns_zone` | プラットフォームおよび BYO プロジェクト VNet からの PE 名前解決              |
+| プライベートエンドポイント（Layer 1 SA、KV） | `azurerm_private_endpoint` | ブートストラップ SA と KV へのプライベート接続                               |
+| ネットワーク RG                              | `azurerm_resource_group`   | VNet、サブネット、NAT、DNS ゾーン、PE を格納                                 |
+
+### `acr`
+
+共有コンテナレジストリを作成。
+
+**デプロイされるリソース:**
+
+| リソース                       | Terraform タイプ                  | 目的                                                             |
+| ------------------------------ | --------------------------------- | ---------------------------------------------------------------- |
+| Azure Container Registry       | `azurerm_container_registry`      | Premium ACR + PE。セルフホステッドランナーコンテナイメージを格納 |
+| ACR ビルドタスク               | `azurerm_container_registry_task` | プラットフォーム内でランナーコンテナイメージをビルド・更新       |
+| ACR プライベートエンドポイント | `azurerm_private_endpoint`        | プラットフォーム VNet からの ACR へのプライベートアクセス        |
+| Agents RG                      | `azurerm_resource_group`          | ACR、Log Analytics、container-run UAMI を格納                    |
+| Log Analytics ワークスペース   | `azurerm_log_analytics_workspace` | 全プロジェクトのランナー ACA Environment のログ/メトリクス集約   |
+| Container-Run UAMI             | `azurerm_user_assigned_identity`  | ランナーコンテナが ACR プルとログ書き込みに使用する ID           |
 
 ### `org_governance` — 抽象モジュール
 
@@ -83,11 +143,25 @@ module "org_governance" {
 - `modules/org_governance/github.tf` — GitHub 組織ルールセット + ランナーグループ
 - `modules/org_governance/azuredevops.tf` — ADO ブランチポリシー + エージェントプール
 
+### `devcenter`
+
+組織全体の Dev Center と Dev Box カタログを作成。
+
+**デプロイされるリソース:**
+
+| リソース                   | Terraform タイプ                        | 目的                                                                     |
+| -------------------------- | --------------------------------------- | ------------------------------------------------------------------------ |
+| Dev Center                 | `azurerm_dev_center`                    | 組織全体の開発者 Dev Box 制御プレーン                                    |
+| Dev Box Definitions        | `azurerm_dev_center_dev_box_definition` | イメージ/SKU ごとの Dev Box 定義（カタログ）                             |
+| DevBox RG                  | `azurerm_resource_group`                | Dev Center と定義を格納                                                  |
+| Identity RG                | `azurerm_resource_group`                | プロジェクト UAMI の組織レベルコンテナ（Layer 2 で投入）                 |
+| KV シークレット（VCS PAT） | `azurerm_key_vault_secret`              | プロジェクトプロビジョニング用にブートストラップ KV に格納される VCS PAT |
+
 ---
 
-## 4. レイヤー 2: プロジェクト LZ サブモジュール (devops-project-lz)
+## 5. レイヤー 2: プロジェクト LZ サブモジュール (devops-project-lz)
 
-プロジェクト LZ はプロジェクトごとのインフラをプロビジョニングする。リポジトリや環境は作成 **しない** — それらは Tier 3 に属する。
+プロジェクト LZ はプロジェクトごとのインフラをプロビジョニングする。リポジトリや環境は作成 **しない** — それらは Layer 3 に属する。
 
 | サブモジュール     | 責務                                                                          | プラットフォーム非依存? | ステータス |
 | ------------------ | ----------------------------------------------------------------------------- | ----------------------- | ---------- |
@@ -150,7 +224,7 @@ CI/CD ランナー登録用の抽象モジュール:
 
 ---
 
-## 5. レイヤー 3: リポジトリ LZ サブモジュール (devops-repo-lz)
+## 6. レイヤー 3: リポジトリ LZ サブモジュール (devops-repo-lz)
 
 Repo LZ は個別のリポジトリとその環境をプロビジョニングする。各リポジトリが独自の Terraform 状態を持ち、独立したライフサイクル管理を可能にする。
 
@@ -232,7 +306,7 @@ module "runner" {
 
 ---
 
-## 6. 抽象モジュールパターン
+## 7. 抽象モジュールパターン
 
 すべての抽象（VCS ディスパッチ）モジュールは以下のパターンに従う:
 
@@ -254,44 +328,51 @@ modules/<module_name>/
 
 ---
 
-## 7. モジュール構成図
+## 8. モジュール構成図
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ devops-org-lz (Tier 1 ルートモジュール)                                  │
+│ bootstrap (Layer 0 ルートモジュール — 組織ごとに 1 つ)                    │
 │                                                                         │
-│  ┌──────────┐ ┌──────┐ ┌─────┐ ┌──────────────────┐ ┌───────────────┐ │
-│  │bootstrap │ │ vnet │ │ acr │ │resource_providers│ │org_governance │ │
-│  └──────────┘ └──────┘ └─────┘ └──────────────────┘ └───────────────┘ │
+│  ┌──────────┐                                                           │
+│  │bootstrap │                                                           │
+│  └──────────┘                                                           │
+└─────────────────────────────────────────────────────────────────────────┘
+                              │ bootstrap.config.json
+                              ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ devops-org-lz (Layer 1 ルートモジュール)                                  │
+│                                                                         │
+│  ┌──────┐ ┌─────┐ ┌──────────────────┐ ┌───────────────┐ ┌──────────┐ │
+│  │ vnet │ │ acr │ │resource_providers│ │org_governance │ │devcenter │ │
+│  └──────┘ └─────┘ └──────────────────┘ └───────────────┘ └──────────┘ │
 └─────────────────────────────────────────────────────────────────────────┘
                               │ remote_state
                               ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ devops-project-lz (Tier 2 ルートモジュール — プロジェクトごとに 1 つ)    │
+│ devops-project-lz (Layer 2 ルートモジュール — プロジェクトごとに 1 つ)    │
 │                                                                         │
 │  ┌─────────────┐ ┌────────────────┐ ┌───────────────┐ ┌─────────────┐ │
 │  │project_state│ │project_identity│ │project_network│ │   aca_env   │ │
 │  └─────────────┘ └────────────────┘ └───────────────┘ └─────────────┘ │
-│  ┌─────────────┐ ┌────────────────┐                                    │
+│  ┌──────────────┐ ┌────────────────┐                                   │
 │  │devbox_project│ │    runner      │                                    │
-│  └─────────────┘ └────────────────┘                                    │
+│  └──────────────┘ └────────────────┘                                   │
 └─────────────────────────────────────────────────────────────────────────┘
                               │ remote_state
                               ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ devops-repo-lz (Tier 3 ルートモジュール — リポジトリごとに 1 つ)         │
+│ devops-repo-lz (Layer 3 ルートモジュール — リポジトリごとに 1 つ)         │
 │                                                                         │
-│  ┌────────────┐ ┌─────────────┐ ┌────────────────────┐                 │
-│  │project_repo│ │ environment │ │ runner (オプション) │                 │
-│  └────────────┘ └─────────────┘ └────────────────────┘                 │
-│                                                                         │
-│  含む: CI/CD ワークフロー/パイプライン生成（プロファイル駆動）           │
+│  ┌────────────┐ ┌─────────────┐ ┌────────────┐ ┌────────────────────┐ │
+│  │project_repo│ │ environment │ │workflow_gen│ │ runner (オプション) │ │
+│  └────────────┘ └─────────────┘ └────────────┘ └────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 8. 実装計画
+## 9. 実装計画
 
 ### フェーズ 1 — プラットフォーム非依存のプロジェクトサブモジュール
 

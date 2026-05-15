@@ -16,7 +16,7 @@
 
 1. [動機と課題の概要](#1-動機と課題の概要)
 2. [ターゲット階層と用語](#2-ターゲット階層と用語)
-3. [ブートストラップと状態管理（2 層モデル）](#3-ブートストラップと状態管理2-層モデル)
+3. [ブートストラップと状態管理（4 層デプロイメント）](#3-ブートストラップと状態管理2-層モデル)
 4. [モジュールとディレクトリ構造（ターゲット）](#4-モジュールとディレクトリ構造ターゲット)
 5. [アーキテクチャ決定記録 (ADR)](#アーキテクチャ決定記録-adr)
 6. [現行設計からの移行パス](#6-現行設計からの移行パス)
@@ -30,12 +30,13 @@
 
 本ドキュメントの主目的は、DevOps Landing Zone の正しい **Organization → Project → Repository → Environment（Org-Project-Repo-Env）リソース階層を定義し精緻化する** ことである。この階層の各レイヤーには明確な責務がある:
 
-| レイヤー         | 責務                                                                                               | Terraform スコープ                                  |
-| ---------------- | -------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
-| **組織**         | すべてのプロジェクトで使用する共有インフラとガバナンス（ACR、Dev Center、VNet、DNS、ルールセット） | `devops-org-lz` (Tier 1)                            |
-| **プロジェクト** | リポジトリ、ID、ランナー、ネットワークコンテキストの論理グループ化（1 つの製品/ワークロード向け）  | `devops-project-lz` (Tier 2)                        |
-| **リポジトリ**   | プロファイル駆動の CI/CD ワークフローとオプションのリポジトリ別 ID を持つ個別の Git リポジトリ     | `devops-repo-lz` (Tier 3)                           |
-| **環境**         | Azure サブスクリプション、UAMI、GitHub/ADO 環境と 1:1 でマッピングされるデプロイターゲット         | `devops-repo-lz` (Tier 3、リポジトリコンテキスト内) |
+| レイヤー             | 責務                                                                                               | Terraform スコープ                                   |
+| -------------------- | -------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| **ブートストラップ** | 基盤となる状態バックエンド（Layer 1 SA + KV + CMK + UAMI）— 一度適用、ほとんど変更なし             | `bootstrap` (Layer 0)                                |
+| **組織**             | すべてのプロジェクトで使用する共有インフラとガバナンス（ACR、Dev Center、VNet、DNS、ルールセット） | `devops-org-lz` (Layer 1)                            |
+| **プロジェクト**     | リポジトリ、ID、ランナー、ネットワークコンテキストの論理グループ化（1 つの製品/ワークロード向け）  | `devops-project-lz` (Layer 2)                        |
+| **リポジトリ**       | プロファイル駆動の CI/CD ワークフローとオプションのリポジトリ別 ID を持つ個別の Git リポジトリ     | `devops-repo-lz` (Layer 3)                           |
+| **環境**             | Azure サブスクリプション、UAMI、GitHub/ADO 環境と 1:1 でマッピングされるデプロイターゲット         | `devops-repo-lz` (Layer 3、リポジトリコンテキスト内) |
 
 以降で特定されるすべてのギャップ、すべてのゴール、すべての設計決定は、リソースがこの階層の **正しいレイヤーにスコープされる** ことを確実にするために存在する。
 
@@ -399,7 +400,7 @@ DevOps プラットフォーム自体の管理に必要なリソース（Layer 1
 
 ---
 
-## 3. ブートストラップと状態管理（2 層モデル）
+## 3. ブートストラップと状態管理（4 層デプロイメント）
 
 ### 3.1 課題
 
@@ -445,7 +446,7 @@ Layer 1 内には、Terraform 操作の順序と状態の依存関係を決定�
 
 ```text
 ┌─────────────────────────────────────────────────────────────────┐
-│ Tier 0: Tfstate ブートストラップ  (infra/bootstrap)              │
+│ Layer 0: Tfstate ブートストラップ  (infra/bootstrap)              │
 │                                                                 │
 │  terraform apply (ローカル状態 → azurerm に移行)                 │
 │  作成するもの:                                                   │
@@ -458,7 +459,7 @@ Layer 1 内には、Terraform 操作の順序と状態の依存関係を決定�
 │                                                                 │
 │  状態キー: "bootstrap.terraform.tfstate" (Layer 1 内)            │
 ├─────────────────────────────────────────────────────────────────┤
-│ Tier 1: プラットフォーム ランディングゾーン  (devops-org-lz)       │
+│ Layer 1: プラットフォーム ランディングゾーン  (devops-org-lz)       │
 │                                                                 │
 │  terraform init -backend-config=devops.azurerm.tfbackend        │
 │  terraform apply                                                │
@@ -474,13 +475,13 @@ Layer 1 内には、Terraform 操作の順序と状態の依存関係を決定�
 │      devops_devbox, container_specs, options                    │
 │                                                                 │
 │  状態キー: "devops-lz.terraform.tfstate" (Layer 1 内)            │
-│  読み取り: Tier 0 の bootstrap.config.json                       │
+│  読み取り: Layer 0 の bootstrap.config.json                       │
 ├─────────────────────────────────────────────────────────────────┤
-│ Tier 2: プロジェクト (devops-project-lz)                          │
+│ Layer 2: プロジェクト (devops-project-lz)                          │
 │                                                                 │
 │  terraform init -backend-config=...                             │
 │  terraform apply                                                │
-│  読み取り: Tier 1 (devops-org-lz) の remote_state                 │
+│  読み取り: Layer 1 (devops-org-lz) の remote_state                 │
 │  作成:                                                           │
 │    • プロジェクト RG + Layer 2 Storage Account + プロジェクト KV  │
 │    • プロジェクトスコープ UAMI + フェデレーション ID 資格情報     │
@@ -490,13 +491,13 @@ Layer 1 内には、Terraform 操作の順序と状態の依存関係を決定�
 │    • DevBox プロジェクトプール + Network Connection               │
 │                                                                 │
 │  状態キー: "projects/<project_name>.terraform.tfstate" (Layer 1) │
-│  読み取り: Tier 1 (devops-org-lz) の remote_state                 │
+│  読み取り: Layer 1 (devops-org-lz) の remote_state                 │
 ├─────────────────────────────────────────────────────────────────┤
-│ Tier 3: リポジトリ + 環境 (devops-repo-lz)                        │
+│ Layer 3: リポジトリ + 環境 (devops-repo-lz)                        │
 │                                                                 │
 │  terraform init -backend-config=...                             │
 │  terraform apply                                                │
-│  読み取り: Tier 2 (devops-project-lz) の remote_state             │
+│  読み取り: Layer 2 (devops-project-lz) の remote_state             │
 │  作成:                                                           │
 │    • VCS リポジトリ（GitHub リポジトリまたは ADO リポジトリ）      │
 │    • CI/CD ワークフロー / パイプライン（リポジトリプロファイル別）│
@@ -530,7 +531,7 @@ Layer 1 内には、Terraform 操作の順序と状態の依存関係を決定�
 
 Layer 1 は DevOps LZ プラットフォームチームが管理する。Layer 2 はプロジェクトチームが独自のインフラストラクチャ・アズ・コード ワークフローで使用する。
 
-> **注記:** Layer 1 内の運用ティア（Tier 0 → Tier 1 → Tier 2 → Tier 3）は `terraform apply` 操作の順序と状態の依存関係を決定する。Tier 0 は非常にまれにしか適用されない（基本的に 1 回）、Tier 1 は組織のプラットフォーム構成が変更された際に適用される、Tier 2 は新しいプロジェクトがオンボーディングまたは変更された際に適用される、Tier 3 はプロジェクト内のリポジトリや環境が追加/変更された際に適用される。4 つのティアすべてが **同じ** Layer 1 Storage Account に状態を格納する。Layer 2 は Tier 2 プロビジョニング中にプロジェクトごとに作成される別の Storage Account であり、プロジェクトチーム独自の利用を目的としている。
+> **注記:** Layer 1（プラットフォーム Storage Account）内の 4 つのデプロイメントレイヤー（Layer 0 → Layer 1 → Layer 2 → Layer 3）は `terraform apply` 操作の順序と状態の依存関係を決定する。Layer 0 は非常にまれにしか適用されない（基本的に 1 回）、Layer 1 は組織のプラットフォーム構成が変更された際に適用される、Layer 2 は新しいプロジェクトがオンボーディングまたは変更された際に適用される、Layer 3 はプロジェクト内のリポジトリや環境が追加/変更された際に適用される。4 つのレイヤーすべてが **同じ** Layer 1 Storage Account に状態を格納する。プロジェクトごとの Layer 2 Storage Account は Layer 2 プロビジョニング中にプロジェクトごとに作成される別の SA であり、プロジェクトチーム独自の利用を目的としている。
 
 ---
 
@@ -540,14 +541,14 @@ Layer 1 は DevOps LZ プラットフォームチームが管理する。Layer 2
 
 ターゲットアーキテクチャでは、既存のディレクトリと並行して **新しいディレクトリレイアウト** を導入する。移行期間中は両方のレイアウトが共存する。新設計の実装が完了したら、旧ディレクトリは削除できる。
 
-| レイヤー                  | 現在のディレクトリ                                                  | ターゲットディレクトリ     | 備考                                                       |
-| ------------------------- | ------------------------------------------------------------------- | -------------------------- | ---------------------------------------------------------- |
-| Tier 0 — ブートストラップ | `infra/_bootstrap/`                                                 | `infra/bootstrap/`         | リネーム（アンダースコアプレフィックス削除）               |
-| Tier 1 — Org LZ           | `infra/devops/lz/`                                                  | `infra/devops-org-lz/`     | フラットディレクトリ（`devops/` 配下のネスト廃止）         |
-| Tier 2 — Project LZ       | `infra/devops/project_github/`, `infra/devops/project_azuredevops/` | `infra/devops-project-lz/` | 別リポジトリからの **Git サブモジュール**                  |
-| Tier 3 — Repo LZ          | _(プロジェクトモジュール内)_                                        | `infra/devops-repo-lz/`    | **Git サブモジュール** — リポジトリ + 環境プロビジョニング |
-| セットアップ              | `infra/_setup_subscriptions/`                                       | _(変更なし)_               |                                                            |
-| 共有モジュール            | `infra/modules/`                                                    | _(変更なし)_               | Org LZ、Project LZ、Repo LZ で使用                         |
+| レイヤー                   | 現在のディレクトリ                                                  | ターゲットディレクトリ     | 備考                                                       |
+| -------------------------- | ------------------------------------------------------------------- | -------------------------- | ---------------------------------------------------------- |
+| Layer 0 — ブートストラップ | `infra/_bootstrap/`                                                 | `infra/bootstrap/`         | リネーム（アンダースコアプレフィックス削除）               |
+| Layer 1 — Org LZ           | `infra/devops/lz/`                                                  | `infra/devops-org-lz/`     | フラットディレクトリ（`devops/` 配下のネスト廃止）         |
+| Layer 2 — Project LZ       | `infra/devops/project_github/`, `infra/devops/project_azuredevops/` | `infra/devops-project-lz/` | 別リポジトリからの **Git サブモジュール**                  |
+| Layer 3 — Repo LZ          | _(プロジェクトモジュール内)_                                        | `infra/devops-repo-lz/`    | **Git サブモジュール** — リポジトリ + 環境プロビジョニング |
+| セットアップ               | `infra/_setup_subscriptions/`                                       | _(変更なし)_               |                                                            |
+| 共有モジュール             | `infra/modules/`                                                    | _(変更なし)_               | Org LZ、Project LZ、Repo LZ で使用                         |
 
 **重要な設計決定:**
 
@@ -556,10 +557,10 @@ Layer 1 は DevOps LZ プラットフォームチームが管理する。Layer 2
 
 ```text
 infra/
-├── bootstrap/                          # Tier 0: Layer 1 状態ストレージ + Key Vault  [新規]
+├── bootstrap/                          # Layer 0: Layer 1 状態ストレージ + Key Vault  [新規]
 ├── _bootstrap/                         # (旧レイアウト — 移行中は保持)
 ├── _setup_subscriptions/               # (変更なし) リソースプロバイダーの登録
-├── devops-org-lz/                      # Tier 1: 組織レベルのプラットフォーム LZ    [新規]
+├── devops-org-lz/                      # Layer 1: 組織レベルのプラットフォーム LZ    [新規]
 │   ├── _variables.tf
 │   ├── _variables.network.tf
 │   ├── _variables.vcs.github.tf
@@ -571,7 +572,7 @@ infra/
 │   ├── governance.azuredevops.tf       # Azure DevOps 組織レベルのポリシー
 │   └── ...
 │
-├── devops-project-lz/                  # Tier 2: プロジェクトごとのリソース          [新規 — git サブモジュール]
+├── devops-project-lz/                  # Layer 2: プロジェクトごとのリソース          [新規 — git サブモジュール]
 │   ├── project_github/                 # GitHub プロジェクト用ルートモジュール
 │   │   ├── _variables.tf               # プロジェクト ID、network_mode
 │   │   ├── _variables.network.tf       # BYO VNet 入力
@@ -594,7 +595,7 @@ infra/
 │       ├── devbox_project/             # DevCenter Project + Pool + Network Connection
 │       └── runner/                     # ACA ジョブ定義 (GitHub または ADO)
 │
-├── devops-repo-lz/                     # Tier 3: リポジトリ + 環境プロビジョニング  [新規 — git サブモジュール]
+├── devops-repo-lz/                     # Layer 3: リポジトリ + 環境プロビジョニング  [新規 — git サブモジュール]
 │   ├── repo_github/                    # GitHub リポジトリ + 環境用ルートモジュール
 │   │   ├── _variables.tf               # リポジトリ名、プロファイル、環境
 │   │   ├── _variables.environments.tf  # 環境 → サブスクリプションマッピング

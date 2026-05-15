@@ -4,35 +4,36 @@
 
 > **Status:** Draft — planning phase.
 >
-> **Purpose:** Define the reusable sub-module (building block) design for the three-layer DevOps Landing Zone deployment model. Each deployment layer (`devops-org-lz`, `devops-project-lz`, `devops-repo-lz`) composes abstract, domain-level sub-modules that encapsulate resources and VCS-specific implementations behind uniform interfaces.
+> **Purpose:** Define the reusable sub-module (building block) design for the four-layer DevOps Landing Zone deployment model. Each deployment layer (`bootstrap`, `devops-org-lz`, `devops-project-lz`, `devops-repo-lz`) composes abstract, domain-level sub-modules that encapsulate resources and VCS-specific implementations behind uniform interfaces.
 
 ---
 
 ## Table of Contents
 
-1. [Three-Layer Deployment Model](#1-three-layer-deployment-model)
+1. [Four-Layer Deployment Model](#1-four-layer-deployment-model)
 2. [Module Design Principles](#2-module-design-principles)
-3. [Layer 1: Organization LZ Sub-Modules (devops-org-lz)](#3-layer-1-organization-lz-sub-modules-devops-org-lz)
-4. [Layer 2: Project LZ Sub-Modules (devops-project-lz)](#4-layer-2-project-lz-sub-modules-devops-project-lz)
-5. [Layer 3: Repo LZ Sub-Modules (devops-repo-lz)](#5-layer-3-repo-lz-sub-modules-devops-repo-lz)
-6. [Abstract Module Pattern](#6-abstract-module-pattern)
-7. [Module Composition Diagram](#7-module-composition-diagram)
-8. [Implementation Plan](#8-implementation-plan)
+3. [Layer 0: Bootstrap Sub-Modules (bootstrap)](#3-layer-0-bootstrap-sub-modules-bootstrap)
+4. [Layer 1: Organization LZ Sub-Modules (devops-org-lz)](#4-layer-1-organization-lz-sub-modules-devops-org-lz)
+5. [Layer 2: Project LZ Sub-Modules (devops-project-lz)](#5-layer-2-project-lz-sub-modules-devops-project-lz)
+6. [Layer 3: Repo LZ Sub-Modules (devops-repo-lz)](#6-layer-3-repo-lz-sub-modules-devops-repo-lz)
+7. [Abstract Module Pattern](#7-abstract-module-pattern)
+8. [Module Composition Diagram](#8-module-composition-diagram)
+9. [Implementation Plan](#9-implementation-plan)
 
 ---
 
-## 1. Three-Layer Deployment Model
+## 1. Four-Layer Deployment Model
 
-The DevOps Landing Zone uses three separate Terraform deployments (each with its own state), layered on top of a bootstrap:
+The DevOps Landing Zone uses **four** separate Terraform deployments (each with its own state). Layer 0 (Bootstrap) is the foundation that creates the state backend; Layers 1–3 build on it:
 
-| Tier | Deployment            | Directory                  | Scope                                                | State Key                                  |
-| ---- | --------------------- | -------------------------- | ---------------------------------------------------- | ------------------------------------------ |
-| 0    | Bootstrap             | `infra/bootstrap/`         | Layer 1 Storage Account + Key Vault                  | `bootstrap.terraform.tfstate`              |
-| 1    | **devops-org-lz**     | `infra/devops-org-lz/`     | Organization-wide shared infrastructure              | `devops-lz.terraform.tfstate`              |
-| 2    | **devops-project-lz** | `infra/devops-project-lz/` | Per-project infra (identity, runner, state, network) | `projects/<name>.terraform.tfstate`        |
-| 3    | **devops-repo-lz**    | `infra/devops-repo-lz/`    | Per-repo resources + environments                    | `repos/<project>/<repo>.terraform.tfstate` |
+| Layer | Deployment            | Directory                  | Scope                                                | State Key                                  |
+| ----- | --------------------- | -------------------------- | ---------------------------------------------------- | ------------------------------------------ |
+| 0     | **Bootstrap**         | `infra/bootstrap/`         | Layer 1 Storage Account + Key Vault + CMK + UAMI     | `bootstrap.terraform.tfstate`              |
+| 1     | **devops-org-lz**     | `infra/devops-org-lz/`     | Organization-wide shared infrastructure              | `devops-lz.terraform.tfstate`              |
+| 2     | **devops-project-lz** | `infra/devops-project-lz/` | Per-project infra (identity, runner, state, network) | `projects/<name>.terraform.tfstate`        |
+| 3     | **devops-repo-lz**    | `infra/devops-repo-lz/`    | Per-repo resources + environments                    | `repos/<project>/<repo>.terraform.tfstate` |
 
-Each layer reads the previous layer's outputs via `terraform_remote_state`.
+Each layer reads the previous layer's outputs via `terraform_remote_state`. Layer 0 is applied once (rarely re-applied); Layers 1–3 follow the standard operational cadence.
 
 ---
 
@@ -52,17 +53,86 @@ Each layer reads the previous layer's outputs via `terraform_remote_state`.
 
 ---
 
-## 3. Layer 1: Organization LZ Sub-Modules (devops-org-lz)
+## 3. Layer 0: Bootstrap Sub-Modules (bootstrap)
+
+The Bootstrap layer creates the foundational state backend and secret store for the entire DevOps Landing Zone. It is applied **once** per organization (rarely re-applied) and uses a local state file that is migrated to the Storage Account it creates.
+
+| Sub-Module  | Responsibility                                | Platform-Agnostic? | Status   |
+| ----------- | --------------------------------------------- | ------------------ | -------- |
+| `bootstrap` | RG + Storage Account + Key Vault + CMK + UAMI | Yes                | Existing |
+
+### `bootstrap`
+
+Creates the Layer 1 state backend and its protection chain.
+
+**Deployed resources:**
+
+| Resource                         | Terraform Type                   | Purpose                                                                                                |
+| -------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Bootstrap Resource Group         | `azurerm_resource_group`         | Container for all bootstrap resources; lifecycle anchor for Layer 1 state backend                      |
+| Layer 1 Storage Account          | `azurerm_storage_account`        | Stores Layer 1 tfstate for bootstrap, Org LZ, Project LZ, and Repo LZ (blob versioning + immutability) |
+| `tfstate` blob containers        | `azurerm_storage_container`      | Per-module tfstate containers (bootstrap, lz, project\_\*, repos/\*)                                   |
+| Bootstrap Key Vault              | `azurerm_key_vault`              | Holds the CMK used to encrypt the Layer 1 SA; purge-protected, RBAC authorization                      |
+| `tfbackend_cmk` Key              | `azurerm_key_vault_key`          | RSA key encrypting the Layer 1 Storage Account (defense in depth for tfstate)                          |
+| Bootstrap UAMI                   | `azurerm_user_assigned_identity` | Identity granted CMK access (`Storage Account → Key Vault` encryption chain)                           |
+| `azurerm.tfbackend` config files | `local_file`                     | Generated Terraform backend config templates for all downstream layers                                 |
+
+**Outputs:** `storage_account_name`, `storage_account_id`, `key_vault_id`, `key_vault_uri`, `resource_group_name`, `bootstrap_config_json` (consumed by all downstream layers).
+
+---
+
+## 4. Layer 1: Organization LZ Sub-Modules (devops-org-lz)
 
 The Org LZ is a single root module that uses existing and new sub-modules to provision organization-wide shared infrastructure.
 
-| Sub-Module           | Responsibility                                                | Platform-Agnostic? | Status   |
-| -------------------- | ------------------------------------------------------------- | ------------------ | -------- |
-| `bootstrap`          | RG + Storage Account + Key Vault + CMK + UAMI (Layer 1 state) | Yes                | Existing |
-| `vnet`               | Platform VNet + subnets + NAT Gateway + Private DNS zones     | Yes                | Existing |
-| `acr`                | Azure Container Registry + image build tasks                  | Yes                | Existing |
-| `resource_providers` | Azure resource provider registrations                         | Yes                | Existing |
-| `org_governance`     | Org-level rulesets, runner groups, agent pools                | No (dispatches)    | New      |
+| Sub-Module           | Responsibility                                            | Platform-Agnostic? | Status   |
+| -------------------- | --------------------------------------------------------- | ------------------ | -------- |
+| `vnet`               | Platform VNet + subnets + NAT Gateway + Private DNS zones | Yes                | Existing |
+| `acr`                | Azure Container Registry + image build tasks              | Yes                | Existing |
+| `resource_providers` | Azure resource provider registrations                     | Yes                | Existing |
+| `org_governance`     | Org-level rulesets, runner groups, agent pools            | No (dispatches)    | New      |
+| `devcenter`          | Dev Center + Dev Box Definitions (org catalog)            | Yes                | New      |
+
+### `vnet`
+
+Creates the platform-managed VNet and associated network infrastructure.
+
+**Deployed resources:**
+
+| Resource                                       | Terraform Type             | Purpose                                                                                  |
+| ---------------------------------------------- | -------------------------- | ---------------------------------------------------------------------------------------- |
+| Platform LZ VNet                               | `azurerm_virtual_network`  | Hub VNet for the platform; hosts PEs, runner subnets, DevBox subnets, and DNS zone links |
+| Subnets (runner, devbox, PE, etc.)             | `azurerm_subnet`           | Project-dedicated address slices (platform mode) and platform-shared service slices      |
+| NAT Gateway _(if configured)_                  | `azurerm_nat_gateway`      | Deterministic egress for runner Jobs (allow-listable IPs)                                |
+| NAT Gateway Public IP                          | `azurerm_public_ip`        | Static public IP(s) attached to NAT Gateway                                              |
+| Private DNS Zones (blob, vault, azurecr, etc.) | `azurerm_private_dns_zone` | Name resolution for PEs from platform and BYO project VNets                              |
+| Private Endpoints (Layer 1 SA, KV)             | `azurerm_private_endpoint` | Private connectivity to bootstrap SA and KV                                              |
+| Network RG                                     | `azurerm_resource_group`   | Hosts VNet, subnets, NAT, DNS zones, and PEs                                             |
+
+### `acr`
+
+Creates the shared container registry for runner images.
+
+**Deployed resources:**
+
+| Resource                 | Terraform Type                    | Purpose                                                              |
+| ------------------------ | --------------------------------- | -------------------------------------------------------------------- |
+| Azure Container Registry | `azurerm_container_registry`      | Premium ACR with PE; stores the self-hosted runner container image   |
+| ACR Build Task           | `azurerm_container_registry_task` | Builds and refreshes the runner container image inside the platform  |
+| ACR Private Endpoint     | `azurerm_private_endpoint`        | Private access to ACR from the platform VNet                         |
+| Agents RG                | `azurerm_resource_group`          | Hosts ACR, Log Analytics, container-run UAMI                         |
+| Log Analytics Workspace  | `azurerm_log_analytics_workspace` | Centralized logs/metrics for runner ACA Environments across projects |
+| Container-Run UAMI       | `azurerm_user_assigned_identity`  | Identity used by runner containers to pull from ACR and write logs   |
+
+### `resource_providers`
+
+Registers required Azure resource providers.
+
+**Deployed resources:**
+
+| Resource                 | Terraform Type                           | Purpose                                                                 |
+| ------------------------ | ---------------------------------------- | ----------------------------------------------------------------------- |
+| Azure Resource Providers | `azurerm_resource_provider_registration` | Enables required APIs (ContainerRegistry, ContainerApp, KeyVault, etc.) |
 
 ### `org_governance` — Abstract Module
 
@@ -83,11 +153,41 @@ Internally dispatches to:
 - `modules/org_governance/github.tf` — GitHub org rulesets + runner groups
 - `modules/org_governance/azuredevops.tf` — ADO branch policies + agent pools
 
+**Deployed resources (GitHub):**
+
+| Resource            | Terraform Type                            | Purpose                                                   |
+| ------------------- | ----------------------------------------- | --------------------------------------------------------- |
+| Org-level rulesets  | `github_organization_ruleset`             | Enforce branch protection and required workflows org-wide |
+| Runner groups       | `github_actions_runner_group`             | Per-project runner isolation at the organization level    |
+| Repository defaults | `github_actions_organization_permissions` | Default Actions permissions for new repositories          |
+
+**Deployed resources (Azure DevOps):**
+
+| Resource         | Terraform Type                 | Purpose                               |
+| ---------------- | ------------------------------ | ------------------------------------- |
+| Agent pools      | `azuredevops_agent_pool`       | Per-project agent pool isolation      |
+| Branch policies  | `azuredevops_branch_policy_*`  | Enforce branch protection org-wide    |
+| Project settings | `azuredevops_project_features` | Default project feature configuration |
+
+### `devcenter`
+
+Creates the organization-wide Dev Center and Dev Box catalog.
+
+**Deployed resources:**
+
+| Resource              | Terraform Type                          | Purpose                                                     |
+| --------------------- | --------------------------------------- | ----------------------------------------------------------- |
+| Dev Center            | `azurerm_dev_center`                    | Org-wide control plane for developer Dev Boxes              |
+| Dev Box Definitions   | `azurerm_dev_center_dev_box_definition` | Per-image/per-SKU Dev Box definitions (catalog)             |
+| DevBox RG             | `azurerm_resource_group`                | Hosts the Dev Center and definitions                        |
+| Identity RG           | `azurerm_resource_group`                | Org-level container for project UAMIs (populated at Tier 2) |
+| KV secrets (VCS PATs) | `azurerm_key_vault_secret`              | VCS PATs stored in bootstrap KV for project provisioning    |
+
 ---
 
-## 4. Layer 2: Project LZ Sub-Modules (devops-project-lz)
+## 5. Layer 2: Project LZ Sub-Modules (devops-project-lz)
 
-The Project LZ provisions per-project infrastructure. It does **not** create repositories or environments — those belong to Tier 3.
+The Project LZ provisions per-project infrastructure. It does **not** create repositories or environments — those belong to Layer 3.
 
 | Sub-Module         | Responsibility                                                           | Platform-Agnostic? | Status   |
 | ------------------ | ------------------------------------------------------------------------ | ------------------ | -------- |
@@ -100,18 +200,30 @@ The Project LZ provisions per-project infrastructure. It does **not** create rep
 
 ### `project_state`
 
-Creates per-project state infrastructure:
+Creates per-project state infrastructure.
 
-- Project-scoped Resource Group (inside platform subscription)
-- Layer 2 Storage Account (LRS default, selectable replication)
-- Project-owned Key Vault (distinct from bootstrap KV)
+**Deployed resources:**
+
+| Resource                 | Terraform Type                                  | Purpose                                                                                |
+| ------------------------ | ----------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Project Resource Group   | `azurerm_resource_group`                        | Houses all project-owned resources in the platform subscription                        |
+| Layer 2 Storage Account  | `azurerm_storage_account`                       | Stores Layer 2 tfstate for project's own app IaC (LRS default, selectable replication) |
+| Layer 2 blob containers  | `azurerm_storage_container`                     | Per-workspace tfstate containers for the project team                                  |
+| Project Key Vault        | `azurerm_key_vault`                             | Project-owned secrets and keys (distinct from bootstrap KV)                            |
+| Layer 2 Private Endpoint | `azurerm_private_endpoint`                      | Private connectivity to the Layer 2 SA from the project's runner network               |
+| Layer 2 PE DNS zone link | `azurerm_private_dns_zone_virtual_network_link` | Links the project's VNet to platform DNS zones for PE resolution                       |
 
 ### `project_identity`
 
-Creates the 7 project-scoped UAMIs:
+Creates the 7 project-scoped UAMIs.
 
-- `feat-plan`, `dev-plan`, `stg-plan`, `prod-plan` (plan-only, read access)
-- `dev-apply`, `stg-apply`, `prod-apply` (apply, write access)
+**Deployed resources:**
+
+| Resource                        | Terraform Type                          | Purpose                                                                                                                             |
+| ------------------------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| 7 Project UAMIs                 | `azurerm_user_assigned_identity`        | Per-environment, per-job-type identities (`feat-plan`, `dev-plan`, `stg-plan`, `prod-plan`, `dev-apply`, `stg-apply`, `prod-apply`) |
+| OIDC Federated Credentials (×7) | `azurerm_federated_identity_credential` | Trust VCS environment to mint Azure tokens per (env × job)                                                                          |
+| Subscription role assignments   | `azurerm_role_assignment`               | Conditional RBAC on env subscription (only when subscription is declared)                                                           |
 
 Each UAMI gets:
 
@@ -120,37 +232,66 @@ Each UAMI gets:
 
 ### `project_network`
 
-Handles the project's DevOps network context:
+Handles the project's DevOps network context.
 
-- **Platform mode:** Creates a project-dedicated subnet slice within the shared Platform LZ VNet
-- **BYO mode:** Validates the externally-provided VNet/subnet against consistency rules
+**Deployed resources (platform mode):**
+
+| Resource                | Terraform Type          | Purpose                                                           |
+| ----------------------- | ----------------------- | ----------------------------------------------------------------- |
+| Project ACA subnet      | `azurerm_subnet`        | Project-dedicated subnet slice within the shared Platform LZ VNet |
+| Subnet delegation (ACA) | subnet delegation block | Delegates the subnet to `Microsoft.App/environments`              |
+
+**Deployed resources (BYO mode):**
+
+| Resource                           | Terraform Type | Purpose                                                               |
+| ---------------------------------- | -------------- | --------------------------------------------------------------------- |
+| _(none created — validation only)_ | data sources   | Validates externally-provided VNet/subnet against 7 consistency rules |
 
 ### `aca_env`
 
-Creates a project-scoped ACA Environment:
+Creates a project-scoped ACA Environment.
 
-- Bound to the project's network context (platform subnet or BYO subnet)
-- Zone redundancy configurable
-- Consumes Log Analytics workspace from Org LZ outputs
+**Deployed resources:**
+
+| Resource                      | Terraform Type                                  | Purpose                                                                     |
+| ----------------------------- | ----------------------------------------------- | --------------------------------------------------------------------------- |
+| ACA Environment               | `azurerm_container_app_environment`             | Runs the project's self-hosted runner Jobs in the project's network context |
+| ACA Environment DNS zone link | `azurerm_private_dns_zone_virtual_network_link` | Links the ACA internal DNS to the project's VNet                            |
 
 ### `devbox_project`
 
-Creates DevCenter project resources:
+Creates DevCenter project resources.
 
-- DevCenter Project (references org-level Dev Center)
-- Dev Box Pool
-- Network Connection (project-scoped, bound to project's network context)
+**Deployed resources:**
 
-### `runner`
+| Resource                 | Terraform Type                          | Purpose                                                                  |
+| ------------------------ | --------------------------------------- | ------------------------------------------------------------------------ |
+| DevCenter Project        | `azurerm_dev_center_project`            | Project-scoped Dev Box catalog reference (links to org-level Dev Center) |
+| Dev Box Pool             | `azurerm_dev_center_project_pool`       | Pool for the project's developer Dev Boxes                               |
+| Network Connection       | `azurerm_dev_center_network_connection` | Binds the pool to the project's runner network context                   |
+| Dev Box role assignments | `azurerm_role_assignment`               | Grants project team access to provision and manage Dev Boxes             |
 
-Abstract module for CI/CD runner registration:
+### `runner` — Abstract Module
 
-- **GitHub:** Registers ACA job as a GitHub Actions runner in the project's runner group
-- **Azure DevOps:** Registers ACA job as an ADO agent in the project's agent pool
+Abstract module for CI/CD runner registration.
+
+**Deployed resources (GitHub):**
+
+| Resource                | Terraform Type                | Purpose                                                  |
+| ----------------------- | ----------------------------- | -------------------------------------------------------- |
+| ACA Job (GitHub runner) | `azurerm_container_app_job`   | Self-hosted runner job pulling image from shared ACR     |
+| Runner group membership | `github_actions_runner_group` | Routes project CI jobs to the project's own runner group |
+
+**Deployed resources (Azure DevOps):**
+
+| Resource                | Terraform Type                       | Purpose                                                  |
+| ----------------------- | ------------------------------------ | -------------------------------------------------------- |
+| ACA Job (ADO agent)     | `azurerm_container_app_job`          | Self-hosted agent job pulling image from shared ACR      |
+| Agent pool registration | `azuredevops_agent_pool` (reference) | Routes project pipelines to the project's own agent pool |
 
 ---
 
-## 5. Layer 3: Repo LZ Sub-Modules (devops-repo-lz)
+## 6. Layer 3: Repo LZ Sub-Modules (devops-repo-lz)
 
 The Repo LZ provisions individual repositories and their environments. Each repository gets its own Terraform state, enabling independent lifecycle management.
 
@@ -159,6 +300,7 @@ The Repo LZ provisions individual repositories and their environments. Each repo
 | `project_repo` | Abstract: Repository creation + branch protection                      | No (dispatches)    | New    |
 | `environment`  | Abstract: Environment creation + protection rules + UAMI binding       | No (dispatches)    | New    |
 | `runner`       | Abstract: Per-repo runner registration (optional, for dedicated pools) | No (dispatches)    | New    |
+| `workflow_gen` | CI/CD workflow/pipeline generation (profile-driven)                    | No (dispatches)    | New    |
 
 ### `project_repo` — Abstract Module
 
@@ -183,6 +325,21 @@ Internally dispatches to:
 
 - `modules/project_repo/github.tf` — `github_repository` + `github_branch_protection_v3`
 - `modules/project_repo/azuredevops.tf` — `azuredevops_git_repository` + branch policies
+
+**Deployed resources (GitHub):**
+
+| Resource            | Terraform Type                 | Purpose                                                  |
+| ------------------- | ------------------------------ | -------------------------------------------------------- |
+| GitHub Repository   | `github_repository`            | Project's source repository with standard file layout    |
+| Branch protection   | `github_branch_protection_v3`  | Enforce branch protection rules (reviews, status checks) |
+| Repository settings | `github_repository` attributes | Visibility, merge settings, features, template config    |
+
+**Deployed resources (Azure DevOps):**
+
+| Resource           | Terraform Type                | Purpose                                                 |
+| ------------------ | ----------------------------- | ------------------------------------------------------- |
+| ADO Git Repository | `azuredevops_git_repository`  | Project's source repository                             |
+| Branch policies    | `azuredevops_branch_policy_*` | Enforce branch protection (reviewers, build validation) |
 
 **Outputs:** `repo_id`, `repo_url`, `repo_full_name`
 
@@ -212,7 +369,39 @@ Internally dispatches to:
 - `modules/environment/github.tf` — `github_repository_environment` + deployment protection rules
 - `modules/environment/azuredevops.tf` — `azuredevops_environment` + approvals + checks
 
+**Deployed resources (GitHub):**
+
+| Resource                    | Terraform Type                                    | Purpose                                                    |
+| --------------------------- | ------------------------------------------------- | ---------------------------------------------------------- |
+| GitHub Environment          | `github_repository_environment`                   | Deployment target bound to repo (dev, staging, prod, etc.) |
+| Deployment protection rules | `github_repository_environment_deployment_policy` | Reviewer requirements, wait timer, branch restrictions     |
+| Environment secrets         | `github_actions_environment_secret`               | OIDC client ID and subscription ID for the env UAMI        |
+
+**Deployed resources (Azure DevOps):**
+
+| Resource           | Terraform Type                        | Purpose                                             |
+| ------------------ | ------------------------------------- | --------------------------------------------------- |
+| ADO Environment    | `azuredevops_environment`             | Deployment target for ADO pipelines                 |
+| Approval checks    | `azuredevops_check_approval`          | Reviewer requirements before deployment             |
+| Service connection | `azuredevops_serviceendpoint_azurerm` | OIDC-based service connection bound to the env UAMI |
+
 **Outputs:** `environment_id`, `environment_name`
+
+### `workflow_gen`
+
+Generates profile-driven CI/CD workflow or pipeline files.
+
+**Deployed resources (GitHub):**
+
+| Resource            | Terraform Type           | Purpose                                                            |
+| ------------------- | ------------------------ | ------------------------------------------------------------------ |
+| Workflow YAML files | `github_repository_file` | Standardized plan/apply workflows targeting the (env × job) matrix |
+
+**Deployed resources (Azure DevOps):**
+
+| Resource             | Terraform Type                 | Purpose                                                    |
+| -------------------- | ------------------------------ | ---------------------------------------------------------- |
+| Pipeline definitions | `azuredevops_build_definition` | YAML pipeline definitions targeting the (env × job) matrix |
 
 ### `runner` (Repo-level, optional)
 
@@ -230,9 +419,11 @@ module "runner" {
 }
 ```
 
+**Deployed resources:** Same as the Layer 2 `runner` module (ACA Job + runner group/agent pool registration) but scoped to a single repository.
+
 ---
 
-## 6. Abstract Module Pattern
+## 7. Abstract Module Pattern
 
 All abstract (VCS-dispatching) modules follow this pattern:
 
@@ -254,44 +445,51 @@ modules/<module_name>/
 
 ---
 
-## 7. Module Composition Diagram
+## 8. Module Composition Diagram
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ devops-org-lz (Tier 1 Root Module)                                      │
+│ bootstrap (Layer 0 Root Module — once per organization)                  │
 │                                                                         │
-│  ┌──────────┐ ┌──────┐ ┌─────┐ ┌──────────────────┐ ┌───────────────┐ │
-│  │bootstrap │ │ vnet │ │ acr │ │resource_providers│ │org_governance │ │
-│  └──────────┘ └──────┘ └─────┘ └──────────────────┘ └───────────────┘ │
+│  ┌──────────┐                                                           │
+│  │bootstrap │                                                           │
+│  └──────────┘                                                           │
+└─────────────────────────────────────────────────────────────────────────┘
+                              │ bootstrap.config.json
+                              ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ devops-org-lz (Layer 1 Root Module)                                      │
+│                                                                         │
+│  ┌──────┐ ┌─────┐ ┌──────────────────┐ ┌───────────────┐ ┌──────────┐ │
+│  │ vnet │ │ acr │ │resource_providers│ │org_governance │ │devcenter │ │
+│  └──────┘ └─────┘ └──────────────────┘ └───────────────┘ └──────────┘ │
 └─────────────────────────────────────────────────────────────────────────┘
                               │ remote_state
                               ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ devops-project-lz (Tier 2 Root Module — one per project)                │
+│ devops-project-lz (Layer 2 Root Module — one per project)                │
 │                                                                         │
 │  ┌─────────────┐ ┌────────────────┐ ┌───────────────┐ ┌─────────────┐ │
 │  │project_state│ │project_identity│ │project_network│ │   aca_env   │ │
 │  └─────────────┘ └────────────────┘ └───────────────┘ └─────────────┘ │
-│  ┌─────────────┐ ┌────────────────┐                                    │
+│  ┌──────────────┐ ┌────────────────┐                                   │
 │  │devbox_project│ │    runner      │                                    │
-│  └─────────────┘ └────────────────┘                                    │
+│  └──────────────┘ └────────────────┘                                   │
 └─────────────────────────────────────────────────────────────────────────┘
                               │ remote_state
                               ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ devops-repo-lz (Tier 3 Root Module — one per repository)                │
+│ devops-repo-lz (Layer 3 Root Module — one per repository)                │
 │                                                                         │
-│  ┌────────────┐ ┌─────────────┐ ┌────────────────────┐                 │
-│  │project_repo│ │ environment │ │ runner (optional)  │                 │
-│  └────────────┘ └─────────────┘ └────────────────────┘                 │
-│                                                                         │
-│  Includes: CI/CD workflow/pipeline generation (profile-driven)          │
+│  ┌────────────┐ ┌─────────────┐ ┌────────────┐ ┌────────────────────┐ │
+│  │project_repo│ │ environment │ │workflow_gen│ │ runner (optional)  │ │
+│  └────────────┘ └─────────────┘ └────────────┘ └────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 8. Implementation Plan
+## 9. Implementation Plan
 
 ### Phase 1 — Platform-agnostic project sub-modules
 

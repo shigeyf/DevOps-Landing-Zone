@@ -16,7 +16,7 @@
 
 1. [Motivation & Problem Summary](#1-motivation--problem-summary)
 2. [Target Hierarchy & Vocabulary](#2-target-hierarchy--vocabulary)
-3. [Bootstrap & State Management (Two-Layer)](#3-bootstrap--state-management-two-layer)
+3. [Bootstrap & State Management (Four-Layer Deployment)](#3-bootstrap--state-management-four-layer-deployment)
 4. [Module & Directory Structure (Target)](#4-module--directory-structure-target)
 5. [Architecture Decision Records (ADRs)](#architecture-decision-records-adrs)
 6. [Migration Path from Current Design](#5-migration-path-from-current-design)
@@ -30,12 +30,13 @@
 
 The primary objective of this document is to **define and refine the correct Organization → Project → Repository → Environment (Org-Project-Repo-Env) resource hierarchy** for the DevOps Landing Zone. Each layer in this hierarchy has a distinct responsibility:
 
-| Layer            | Responsibility                                                                                   | Terraform Scope                                      |
-| ---------------- | ------------------------------------------------------------------------------------------------ | ---------------------------------------------------- |
-| **Organization** | Shared infrastructure and governance used by all projects (ACR, Dev Center, VNet, DNS, rulesets) | `devops-org-lz` (Tier 1)                             |
-| **Project**      | Logical grouping of repos, identities, runners, and network context for one product/workload     | `devops-project-lz` (Tier 2)                         |
-| **Repository**   | Individual Git repo with profile-driven CI/CD workflows and optional per-repo identity           | `devops-repo-lz` (Tier 3)                            |
-| **Environment**  | Deployment target mapping 1:1 to an Azure subscription, UAMI, and GitHub/ADO environment         | `devops-repo-lz` (Tier 3, within repository context) |
+| Layer            | Responsibility                                                                                   | Terraform Scope                                       |
+| ---------------- | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------- |
+| **Bootstrap**    | Foundational state backend (Layer 1 SA + KV + CMK + UAMI) — applied once, rarely changed         | `bootstrap` (Layer 0)                                 |
+| **Organization** | Shared infrastructure and governance used by all projects (ACR, Dev Center, VNet, DNS, rulesets) | `devops-org-lz` (Layer 1)                             |
+| **Project**      | Logical grouping of repos, identities, runners, and network context for one product/workload     | `devops-project-lz` (Layer 2)                         |
+| **Repository**   | Individual Git repo with profile-driven CI/CD workflows and optional per-repo identity           | `devops-repo-lz` (Layer 3)                            |
+| **Environment**  | Deployment target mapping 1:1 to an Azure subscription, UAMI, and GitHub/ADO environment         | `devops-repo-lz` (Layer 3, within repository context) |
 
 Every gap identified below, every goal, and every design decision in subsequent sections exists to ensure resources are **correctly scoped** to the right layer of this hierarchy.
 
@@ -79,7 +80,7 @@ Every gap identified below, every goal, and every design decision in subsequent 
 
 > **Purpose of this subsection.** Before the rest of the document dives into the as-is state, the gaps, the to-be design, and how each gap is closed, this subsection summarizes **where we are going** so readers have the target architecture in mind throughout. Each bullet below is realized by the section referenced in parentheses; no new decisions are introduced here.
 
-**1. Four-layer resource hierarchy — Organization → Project → Repository → Environment** (§2)
+**1. Five-layer resource hierarchy — Bootstrap → Organization → Project → Repository → Environment** (§2)
 
 - **Organization (Platform LZ, `devops-org-lz`)** — shared, org-wide infrastructure: bootstrap Storage Account (Layer 1 state), ACR, Log Analytics, container-run UAMI, Platform VNet, private DNS zones, Dev Center, container image build tasks.
 - **Project (`devops-project-lz`)** — the unit of team ownership and billing isolation. Owns per-project UAMIs, OIDC credentials, Layer 2 state Storage Account, ACA Environment, project DevOps VNet (platform-provided or BYO), and DevBox pool.
@@ -399,7 +400,7 @@ Provisions one project's Azure resources, identities, and VCS-side configuration
 
 ---
 
-## 3. Bootstrap & State Management (Two-Layer)
+## 3. Bootstrap & State Management (Four-Layer Deployment)
 
 ### 3.1 Problem
 
@@ -439,13 +440,13 @@ Today this two-layer relationship is not made explicit.
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 3.3 Operational tiers within Layer 1
+### 3.3 Four deployment layers within Layer 1
 
-Within Layer 1, there are four operational tiers that determine the order of Terraform operations and state dependencies:
+Within Layer 1, there are four deployment layers (Layer 0–3) that determine the order of Terraform operations and state dependencies:
 
 ```text
 ┌─────────────────────────────────────────────────────────────────┐
-│ Tier 0: Tfstate Bootstrap  (infra/bootstrap)                     │
+│ Layer 0: Tfstate Bootstrap  (infra/bootstrap)                     │
 │                                                                 │
 │  terraform apply (local state → then migrate to azurerm)        │
 │  Creates:                                                       │
@@ -458,7 +459,7 @@ Within Layer 1, there are four operational tiers that determine the order of Ter
 │                                                                 │
 │  State key: "bootstrap.terraform.tfstate"  (in Layer 1)         │
 ├─────────────────────────────────────────────────────────────────┤
-│ Tier 1: Platform Landing Zone  (devops-org-lz)                   │
+│ Layer 1: Platform Landing Zone  (devops-org-lz)                   │
 │                                                                 │
 │  terraform init -backend-config=devops.azurerm.tfbackend        │
 │  terraform apply                                                │
@@ -474,13 +475,13 @@ Within Layer 1, there are four operational tiers that determine the order of Ter
 │      devops_devbox, container_specs, options                    │
 │                                                                 │
 │  State key: "devops-lz.terraform.tfstate"  (in Layer 1)         │
-│  Reads: bootstrap.config.json from Tier 0                       │
+│  Reads: bootstrap.config.json from Layer 0                       │
 ├─────────────────────────────────────────────────────────────────┤
-│ Tier 2: Projects  (devops-project-lz)                            │
+│ Layer 2: Projects  (devops-project-lz)                            │
 │                                                                 │
 │  terraform init -backend-config=...                             │
 │  terraform apply                                                │
-│  Reads: remote_state of Tier 1 (devops-org-lz)                  │
+│  Reads: remote_state of Layer 1 (devops-org-lz)                  │
 │  Creates:                                                        │
 │    • Project RG + Layer 2 Storage Account + Project Key Vault   │
 │    • Project-scoped UAMIs + federated identity credentials      │
@@ -490,13 +491,13 @@ Within Layer 1, there are four operational tiers that determine the order of Ter
 │    • DevBox project pool + Network Connection                   │
 │                                                                 │
 │  State key: "projects/<project_name>.terraform.tfstate" (Layer 1)│
-│  Reads: remote_state of Tier 1 (devops-org-lz)                  │
+│  Reads: remote_state of Layer 1 (devops-org-lz)                  │
 ├─────────────────────────────────────────────────────────────────┤
-│ Tier 3: Repositories + Environments  (devops-repo-lz)            │
+│ Layer 3: Repositories + Environments  (devops-repo-lz)            │
 │                                                                 │
 │  terraform init -backend-config=...                             │
 │  terraform apply                                                │
-│  Reads: remote_state of Tier 2 (devops-project-lz)              │
+│  Reads: remote_state of Layer 2 (devops-project-lz)              │
 │  Creates:                                                        │
 │    • VCS repositories (GitHub repos or ADO repos)               │
 │    • CI/CD workflows / pipelines (per-repo profile)             │
@@ -531,7 +532,7 @@ The **conceptual documentation** should make the two-layer storage model explici
 
 Layer 1 is managed by the DevOps LZ platform team. Layer 2 is consumed by the project teams for their own infrastructure-as-code workflows.
 
-> **Note:** Within Layer 1, the operational tiers (Tier 0 → Tier 1 → Tier 2 → Tier 3) determine the order of `terraform apply` operations and state dependencies. Tier 0 should be applied very rarely (essentially once), Tier 1 is applied when the organization's platform configuration changes, Tier 2 is applied when a new project is onboarded or modified, and Tier 3 is applied when repositories or environments are added/changed within a project. All four tiers store their state in the **same** Layer 1 Storage Account. Layer 2 is a separate Storage Account created per project during Tier 2 provisioning, intended for the project team's own use.
+> **Note:** Within Layer 1 (the platform Storage Account), the four deployment layers (Layer 0 → Layer 1 → Layer 2 → Layer 3) determine the order of `terraform apply` operations and state dependencies. Layer 0 should be applied very rarely (essentially once), Layer 1 is applied when the organization's platform configuration changes, Layer 2 is applied when a new project is onboarded or modified, and Layer 3 is applied when repositories or environments are added/changed within a project. All four layers store their state in the **same** Layer 1 Storage Account. The per-project Layer 2 Storage Account is a separate SA created per project during Layer 2 provisioning, intended for the project team's own use.
 
 ---
 
@@ -541,14 +542,14 @@ Layer 1 is managed by the DevOps LZ platform team. Layer 2 is consumed by the pr
 
 The target architecture introduces a **new directory layout** alongside the existing directories. During the transition period, both layouts coexist. Once the new-design implementation is complete, the old directories can be removed.
 
-| Layer               | Current directory                                                   | Target directory           | Notes                                        |
-| ------------------- | ------------------------------------------------------------------- | -------------------------- | -------------------------------------------- |
-| Tier 0 — Bootstrap  | `infra/_bootstrap/`                                                 | `infra/bootstrap/`         | Renamed (underscore prefix removed)          |
-| Tier 1 — Org LZ     | `infra/devops/lz/`                                                  | `infra/devops-org-lz/`     | Flat directory (no nesting under `devops/`)  |
-| Tier 2 — Project LZ | `infra/devops/project_github/`, `infra/devops/project_azuredevops/` | `infra/devops-project-lz/` | **Git submodule** from a separate repository |
-| Tier 3 — Repo LZ    | _(within project modules)_                                          | `infra/devops-repo-lz/`    | **Git submodule** — repo + env provisioning  |
-| Setup               | `infra/_setup_subscriptions/`                                       | _(unchanged)_              |                                              |
-| Shared modules      | `infra/modules/`                                                    | _(unchanged)_              | Consumed by Org LZ, Project LZ, and Repo LZ  |
+| Layer                | Current directory                                                   | Target directory           | Notes                                        |
+| -------------------- | ------------------------------------------------------------------- | -------------------------- | -------------------------------------------- |
+| Layer 0 — Bootstrap  | `infra/_bootstrap/`                                                 | `infra/bootstrap/`         | Renamed (underscore prefix removed)          |
+| Layer 1 — Org LZ     | `infra/devops/lz/`                                                  | `infra/devops-org-lz/`     | Flat directory (no nesting under `devops/`)  |
+| Layer 2 — Project LZ | `infra/devops/project_github/`, `infra/devops/project_azuredevops/` | `infra/devops-project-lz/` | **Git submodule** from a separate repository |
+| Layer 3 — Repo LZ    | _(within project modules)_                                          | `infra/devops-repo-lz/`    | **Git submodule** — repo + env provisioning  |
+| Setup                | `infra/_setup_subscriptions/`                                       | _(unchanged)_              |                                              |
+| Shared modules       | `infra/modules/`                                                    | _(unchanged)_              | Consumed by all layers                       |
 
 **Key design decisions:**
 
@@ -557,10 +558,10 @@ The target architecture introduces a **new directory layout** alongside the exis
 
 ```text
 infra/
-├── bootstrap/                          # Tier 0: Layer 1 state storage + Key Vault   [NEW]
+├── bootstrap/                          # Layer 0: Layer 1 state storage + Key Vault   [NEW]
 ├── _bootstrap/                         # (old layout — retained during transition)
 ├── _setup_subscriptions/               # (unchanged) resource provider registration
-├── devops-org-lz/                      # Tier 1: Organization-level Platform LZ       [NEW]
+├── devops-org-lz/                      # Layer 1: Organization-level Platform LZ       [NEW]
 │   ├── _variables.tf
 │   ├── _variables.network.tf
 │   ├── _variables.vcs.github.tf
@@ -572,7 +573,7 @@ infra/
 │   ├── governance.azuredevops.tf       # Azure DevOps org-level policies
 │   └── ...
 │
-├── devops-project-lz/                  # Tier 2: Per-project resources               [NEW — git submodule]
+├── devops-project-lz/                  # Layer 2: Per-project resources               [NEW — git submodule]
 │   ├── project_github/                 # Root module for GitHub projects
 │   │   ├── _variables.tf               # project identity, network_mode
 │   │   ├── _variables.network.tf       # BYO VNet inputs
@@ -595,7 +596,7 @@ infra/
 │       ├── devbox_project/             # DevCenter Project + Pool + Network Connection
 │       └── runner/                     # ACA job definition (GitHub or ADO)
 │
-├── devops-repo-lz/                     # Tier 3: Repo + Environment provisioning     [NEW — git submodule]
+├── devops-repo-lz/                     # Layer 3: Repo + Environment provisioning     [NEW — git submodule]
 │   ├── repo_github/                    # Root module for GitHub repos + environments
 │   │   ├── _variables.tf               # repo name, profile, environments
 │   │   ├── _variables.environments.tf  # env → subscription mapping
