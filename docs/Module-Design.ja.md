@@ -57,6 +57,22 @@ DevOps Landing Zone は **4 つ** の個別の Terraform デプロイメント�
 
 ブートストラップレイヤーは DevOps Landing Zone 全体の基盤となる状態バックエンドとシークレットストアを作成する。組織ごとに **1 回** だけ適用される（再適用はまれ）。ローカル状態ファイルを使用し、作成した Storage Account に移行する。
 
+### Layer 0 — 統合リソース一覧
+
+| #   | リソース                          | Azure タイプ / Terraform タイプ  | リソースグループ     | サブモジュール |
+| --- | --------------------------------- | -------------------------------- | -------------------- | -------------- |
+| 1   | ブートストラップ リソースグループ | `azurerm_resource_group`         | _(自身)_             | `bootstrap`    |
+| 2   | Layer 1 Storage Account           | `azurerm_storage_account`        | Bootstrap RG         | `bootstrap`    |
+| 3   | `tfstate` blob コンテナ           | `azurerm_storage_container`      | Bootstrap RG (SA)    | `bootstrap`    |
+| 4   | ブートストラップ Key Vault        | `azurerm_key_vault`              | Bootstrap RG         | `bootstrap`    |
+| 5   | `tfbackend_cmk` キー              | `azurerm_key_vault_key`          | Bootstrap RG (KV)    | `bootstrap`    |
+| 6   | ブートストラップ UAMI             | `azurerm_user_assigned_identity` | Bootstrap RG         | `bootstrap`    |
+| 7   | `azurerm.tfbackend` 設定ファイル  | `local_file`                     | _(ローカルディスク)_ | `bootstrap`    |
+
+**合計: 1 リソースグループ、7 リソース。**
+
+### サブモジュール
+
 | サブモジュール | 責務                                          | プラットフォーム非依存? | ステータス |
 | -------------- | --------------------------------------------- | ----------------------- | ---------- |
 | `bootstrap`    | RG + Storage Account + Key Vault + CMK + UAMI | はい                    | 既存       |
@@ -84,6 +100,35 @@ Layer 1 状態バックエンドとその保護チェーンを作成する。
 ## 4. レイヤー 1: 組織 LZ サブモジュール (devops-org-lz)
 
 Org LZ は、既存および新規のサブモジュールを使用して組織全体の共有インフラをプロビジョニングする単一のルートモジュールである。
+
+### Layer 1 — 統合リソース一覧
+
+| #   | リソース                              | Azure タイプ / Terraform タイプ         | リソースグループ | サブモジュール   |
+| --- | ------------------------------------- | --------------------------------------- | ---------------- | ---------------- |
+| 1   | ネットワーク RG                       | `azurerm_resource_group`                | _(自身)_         | `vnet`           |
+| 2   | プラットフォーム LZ VNet              | `azurerm_virtual_network`               | Network RG       | `vnet`           |
+| 3   | サブネット（ランナー、DevBox、PE 等） | `azurerm_subnet`                        | Network RG       | `vnet`           |
+| 4   | NAT Gateway（設定時）                 | `azurerm_nat_gateway`                   | Network RG       | `vnet`           |
+| 5   | NAT Gateway パブリック IP             | `azurerm_public_ip`                     | Network RG       | `vnet`           |
+| 6   | プライベート DNS ゾーン               | `azurerm_private_dns_zone`              | Network RG       | `vnet`           |
+| 7   | プライベートエンドポイント（SA、KV）  | `azurerm_private_endpoint`              | Network RG       | `vnet`           |
+| 8   | Agents RG                             | `azurerm_resource_group`                | _(自身)_         | `acr`            |
+| 9   | Azure Container Registry              | `azurerm_container_registry`            | Agents RG        | `acr`            |
+| 10  | ACR ビルドタスク                      | `azurerm_container_registry_task`       | Agents RG        | `acr`            |
+| 11  | ACR プライベートエンドポイント        | `azurerm_private_endpoint`              | Agents RG        | `acr`            |
+| 12  | Log Analytics ワークスペース          | `azurerm_log_analytics_workspace`       | Agents RG        | `acr`            |
+| 13  | Container-Run UAMI                    | `azurerm_user_assigned_identity`        | Agents RG        | `acr`            |
+| 14  | DevBox RG                             | `azurerm_resource_group`                | _(自身)_         | `devcenter`      |
+| 15  | Dev Center                            | `azurerm_dev_center`                    | DevBox RG        | `devcenter`      |
+| 16  | Dev Box Definitions                   | `azurerm_dev_center_dev_box_definition` | DevBox RG        | `devcenter`      |
+| 17  | KV シークレット（VCS PAT）            | `azurerm_key_vault_secret`              | Bootstrap KV     | `devcenter`      |
+| 18  | 組織レベルルールセット（GitHub）      | `github_organization_ruleset`           | —                | `org_governance` |
+| 19  | ランナーグループ（GitHub）            | `github_actions_runner_group`           | —                | `org_governance` |
+| 20  | エージェントプール（ADO）             | `azuredevops_agent_pool`                | —                | `org_governance` |
+
+**合計: 3 リソースグループ（Network RG、Agents RG、DevBox RG）、約 20 リソース。**
+
+### サブモジュール
 
 | サブモジュール   | 責務                                                                       | プラットフォーム非依存? | ステータス |
 | ---------------- | -------------------------------------------------------------------------- | ----------------------- | ---------- |
@@ -146,6 +191,22 @@ module "org_governance" {
 - `modules/org_governance/github.tf` — GitHub 組織ルールセット + ランナーグループ
 - `modules/org_governance/azuredevops.tf` — ADO ブランチポリシー + エージェントプール
 
+**デプロイされるリソース（GitHub）:**
+
+| リソース                 | Terraform タイプ                          | 目的                                             |
+| ------------------------ | ----------------------------------------- | ------------------------------------------------ |
+| 組織レベルルールセット   | `github_organization_ruleset`             | ブランチ保護と必須ワークフローを組織全体で適用   |
+| ランナーグループ         | `github_actions_runner_group`             | プロジェクトごとのランナー分離を組織レベルで実施 |
+| リポジトリデフォルト設定 | `github_actions_organization_permissions` | 新規リポジトリのデフォルト Actions 権限          |
+
+**デプロイされるリソース（Azure DevOps）:**
+
+| リソース           | Terraform タイプ               | 目的                                     |
+| ------------------ | ------------------------------ | ---------------------------------------- |
+| エージェントプール | `azuredevops_agent_pool`       | プロジェクトごとのエージェントプール分離 |
+| ブランチポリシー   | `azuredevops_branch_policy_*`  | ブランチ保護を組織全体で適用             |
+| プロジェクト設定   | `azuredevops_project_features` | プロジェクトのデフォルト機能設定         |
+
 ### `devcenter`
 
 組織全体の Dev Center と Dev Box カタログを作成。
@@ -165,6 +226,33 @@ module "org_governance" {
 
 プロジェクト LZ はプロジェクトごとのインフラをプロビジョニングする。リポジトリや環境は作成 **しない** — それらは Layer 3 に属する。
 
+### Layer 2 — 統合リソース一覧（プロジェクトごと）
+
+| #   | リソース                                             | Azure タイプ / Terraform タイプ                          | リソースグループ | サブモジュール     |
+| --- | ---------------------------------------------------- | -------------------------------------------------------- | ---------------- | ------------------ |
+| 1   | プロジェクト リソースグループ                        | `azurerm_resource_group`                                 | _(自身)_         | `project_state`    |
+| 2   | Layer 2 Storage Account                              | `azurerm_storage_account`                                | Project RG       | `project_state`    |
+| 3   | Layer 2 blob コンテナ                                | `azurerm_storage_container`                              | Project RG       | `project_state`    |
+| 4   | プロジェクト Key Vault                               | `azurerm_key_vault`                                      | Project RG       | `project_state`    |
+| 5   | Layer 2 プライベートエンドポイント                   | `azurerm_private_endpoint`                               | Project RG       | `project_state`    |
+| 6   | Layer 2 PE DNS ゾーンリンク                          | `azurerm_private_dns_zone_virtual_network_link`          | Project RG       | `project_state`    |
+| 7   | 7 プロジェクト UAMI                                  | `azurerm_user_assigned_identity` (×7)                    | Project RG       | `project_identity` |
+| 8   | OIDC フェデレーション資格情報 (×7)                   | `azurerm_federated_identity_credential`                  | Project RG       | `project_identity` |
+| 9   | サブスクリプションロール割り当て                     | `azurerm_role_assignment`（条件付き）                    | _(sub スコープ)_ | `project_identity` |
+| 10  | プロジェクト ACA サブネット _(platform モード)_      | `azurerm_subnet`                                         | Network RG       | `project_network`  |
+| 11  | ACA Environment                                      | `azurerm_container_app_environment`                      | Project RG       | `aca_env`          |
+| 12  | ACA Environment DNS ゾーンリンク                     | `azurerm_private_dns_zone_virtual_network_link`          | Project RG       | `aca_env`          |
+| 13  | DevCenter Project                                    | `azurerm_dev_center_project`                             | Project RG       | `devbox_project`   |
+| 14  | Dev Box Pool                                         | `azurerm_dev_center_project_pool`                        | Project RG       | `devbox_project`   |
+| 15  | Network Connection                                   | `azurerm_dev_center_network_connection`                  | Project RG       | `devbox_project`   |
+| 16  | Dev Box ロール割り当て                               | `azurerm_role_assignment`                                | Project RG       | `devbox_project`   |
+| 17  | ACA ジョブ（GitHub ランナーまたは ADO エージェント） | `azurerm_container_app_job`                              | Project RG       | `runner`           |
+| 18  | ランナーグループ/エージェントプール登録              | `github_actions_runner_group` / `azuredevops_agent_pool` | —                | `runner`           |
+
+**合計: 1 リソースグループ（Project RG）、プロジェクトあたり約 18 リソース。**
+
+### サブモジュール
+
 | サブモジュール     | 責務                                                                          | プラットフォーム非依存? | ステータス |
 | ------------------ | ----------------------------------------------------------------------------- | ----------------------- | ---------- |
 | `project_state`    | Layer 2 Storage Account + プロジェクト Key Vault + プロジェクト RG            | はい                    | 新規       |
@@ -176,22 +264,35 @@ module "org_governance" {
 
 ### `project_state`
 
-プロジェクトごとの状態インフラを作成:
+プロジェクトごとの状態インフラを作成。
 
-- プロジェクトスコープのリソースグループ（プラットフォームサブスクリプション内、全プロジェクトリソースを格納）
-- Layer 2 Storage Account（LRS デフォルト、レプリケーション選択可）
-- プロジェクト所有の Key Vault（ブートストラップ KV とは別）
+**デプロイされるリソース:**
+
+| リソース                           | Terraform タイプ                                | 目的                                                                                               |
+| ---------------------------------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| プロジェクト リソースグループ      | `azurerm_resource_group`                        | 全プロジェクト所有リソース（state、ID、シークレット）をプラットフォームサブスクリプション内に格納  |
+| Layer 2 Storage Account            | `azurerm_storage_account`                       | プロジェクトチームのアプリ IaC 用 Layer 2 tfstate を格納（LRS デフォルト、レプリケーション選択可） |
+| Layer 2 blob コンテナ              | `azurerm_storage_container`                     | プロジェクトチーム用のワークスペースごとの tfstate コンテナ                                        |
+| プロジェクト Key Vault             | `azurerm_key_vault`                             | プロジェクト所有のシークレットとキー（ブートストラップ KV とは別）                                 |
+| Layer 2 プライベートエンドポイント | `azurerm_private_endpoint`                      | プロジェクトのランナーネットワークから Layer 2 SA へのプライベート接続                             |
+| Layer 2 PE DNS ゾーンリンク        | `azurerm_private_dns_zone_virtual_network_link` | PE 解決のためにプロジェクトの VNet をプラットフォーム DNS ゾーンにリンク                           |
 
 ### `project_identity`
 
-**プロジェクト RG 内** に 7 つのプロジェクトスコープ UAMI を作成:
+**プロジェクト RG 内** に 7 つのプロジェクトスコープ UAMI を作成。
 
-- `feat-plan`、`dev-plan`、`stg-plan`、`prod-plan`（plan 専用、読み取りアクセス）
-- `dev-apply`、`stg-apply`、`prod-apply`（apply、書き込みアクセス）
+**デプロイされるリソース:**
+
+| リソース                           | Terraform タイプ                        | 目的                                                                                                                      |
+| ---------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| 7 プロジェクト UAMI                | `azurerm_user_assigned_identity`        | 環境ごと・ジョブタイプごとの ID: `feat-plan`、`dev-plan`、`stg-plan`、`prod-plan`、`dev-apply`、`stg-apply`、`prod-apply` |
+| OIDC フェデレーション資格情報 (×7) | `azurerm_federated_identity_credential` | VCS 環境が (env × job) ごとに Azure トークンを発行できるよう信頼                                                          |
+| サブスクリプションロール割り当て   | `azurerm_role_assignment`               | 環境サブスクリプションへの条件付き RBAC（サブスクリプションが宣言されている場合のみ）                                     |
 
 > [!NOTE]
 > すべての UAMI はプロジェクト RG（Layer 2）に作成される。組織レベルの Identity RG は使用しない。
 > これによりプロジェクトが自己完結的になり、Layer 2 が Layer 1 のリソースグループへの書き込みアクセスを必要としない。
+> プロジェクト RG を削除するとすべてのプロジェクト所有 ID もクリーンに削除される。
 
 各 UAMI には以下が付与される:
 
@@ -200,33 +301,62 @@ module "org_governance" {
 
 ### `project_network`
 
-プロジェクトの DevOps ネットワークコンテキストを処理:
+プロジェクトの DevOps ネットワークコンテキストを処理。
 
-- **Platform モード:** 共有プラットフォーム LZ VNet 内にプロジェクト専用サブネットスライスを作成
-- **BYO モード:** 外部提供の VNet/サブネットを一貫性ルールに対して検証
+**デプロイされるリソース（platform モード）:**
+
+| リソース                    | Terraform タイプ       | 目的                                                        |
+| --------------------------- | ---------------------- | ----------------------------------------------------------- |
+| プロジェクト ACA サブネット | `azurerm_subnet`       | 共有プラットフォーム LZ VNet 内のプロジェクト専用サブネット |
+| サブネット委任（ACA）       | サブネット委任ブロック | サブネットを `Microsoft.App/environments` に委任            |
+
+**デプロイされるリソース（BYO モード）:**
+
+| リソース                | Terraform タイプ | 目的                                                  |
+| ----------------------- | ---------------- | ----------------------------------------------------- |
+| _(作成なし — 検証のみ)_ | data ソース      | 外部提供の VNet/サブネットを 7 つの一貫性ルールで検証 |
 
 ### `aca_env`
 
-プロジェクトスコープの ACA Environment を作成:
+プロジェクトスコープの ACA Environment を作成。
 
-- プロジェクトのネットワークコンテキストにバインド（platform サブネットまたは BYO サブネット）
-- ゾーン冗長性設定可能
-- Org LZ 出力から Log Analytics ワークスペースを消費
+**デプロイされるリソース:**
+
+| リソース                         | Terraform タイプ                                | 目的                                                         |
+| -------------------------------- | ----------------------------------------------- | ------------------------------------------------------------ |
+| ACA Environment                  | `azurerm_container_app_environment`             | プロジェクトのネットワークコンテキストでランナージョブを実行 |
+| ACA Environment DNS ゾーンリンク | `azurerm_private_dns_zone_virtual_network_link` | ACA 内部 DNS をプロジェクトの VNet にリンク                  |
 
 ### `devbox_project`
 
-DevCenter プロジェクトリソースを作成:
+DevCenter プロジェクトリソースを作成。
 
-- DevCenter Project（組織レベル DevCenter を参照）
-- Dev Box Pool
-- Network Connection（プロジェクトスコープ、プロジェクトのネットワークコンテキストにバインド）
+**デプロイされるリソース:**
 
-### `runner`
+| リソース               | Terraform タイプ                        | 目的                                                                          |
+| ---------------------- | --------------------------------------- | ----------------------------------------------------------------------------- |
+| DevCenter Project      | `azurerm_dev_center_project`            | プロジェクトスコープの Dev Box カタログ参照（組織レベル Dev Center にリンク） |
+| Dev Box Pool           | `azurerm_dev_center_project_pool`       | プロジェクト開発者の Dev Box 用プール                                         |
+| Network Connection     | `azurerm_dev_center_network_connection` | プールをプロジェクトのランナーネットワークコンテキストにバインド              |
+| Dev Box ロール割り当て | `azurerm_role_assignment`               | プロジェクトチームに Dev Box のプロビジョニング・管理権限を付与               |
 
-CI/CD ランナー登録用の抽象モジュール:
+### `runner` — 抽象モジュール
 
-- **GitHub:** ACA ジョブをプロジェクトのランナーグループに GitHub Actions ランナーとして登録
-- **Azure DevOps:** ACA ジョブをプロジェクトのエージェントプールに ADO エージェントとして登録
+CI/CD ランナー登録用の抽象モジュール。
+
+**デプロイされるリソース（GitHub）:**
+
+| リソース                       | Terraform タイプ              | 目的                                                          |
+| ------------------------------ | ----------------------------- | ------------------------------------------------------------- |
+| ACA ジョブ（GitHub ランナー）  | `azurerm_container_app_job`   | 共有 ACR からイメージを取得するセルフホステッドランナージョブ |
+| ランナーグループメンバーシップ | `github_actions_runner_group` | プロジェクトの CI ジョブを専用ランナーグループにルーティング  |
+
+**デプロイされるリソース（Azure DevOps）:**
+
+| リソース                       | Terraform タイプ                 | 目的                                                              |
+| ------------------------------ | -------------------------------- | ----------------------------------------------------------------- |
+| ACA ジョブ（ADO エージェント） | `azurerm_container_app_job`      | 共有 ACR からイメージを取得するセルフホステッドエージェントジョブ |
+| エージェントプール登録         | `azuredevops_agent_pool`（参照） | プロジェクトのパイプラインを専用エージェントプールにルーティング  |
 
 ---
 
@@ -234,11 +364,28 @@ CI/CD ランナー登録用の抽象モジュール:
 
 Repo LZ は個別のリポジトリとその環境をプロビジョニングする。各リポジトリが独自の Terraform 状態を持ち、独立したライフサイクル管理を可能にする。
 
+### Layer 3 — 統合リソース一覧（リポジトリごと）
+
+| #   | リソース                               | Terraform タイプ / プラットフォーム                                              | サブモジュール |
+| --- | -------------------------------------- | -------------------------------------------------------------------------------- | -------------- |
+| 1   | GitHub リポジトリ / ADO Git リポジトリ | `github_repository` / `azuredevops_git_repository`                               | `project_repo` |
+| 2   | ブランチ保護 / ポリシー                | `github_branch_protection_v3` / `azuredevops_branch_policy_*`                    | `project_repo` |
+| 3   | GitHub 環境 / ADO 環境 (×N)            | `github_repository_environment` / `azuredevops_environment`                      | `environment`  |
+| 4   | デプロイメント保護ルール / 承認 (×N)   | `github_repository_environment_deployment_policy` / `azuredevops_check_approval` | `environment`  |
+| 5   | 環境シークレット / サービス接続        | `github_actions_environment_secret` / `azuredevops_serviceendpoint_azurerm`      | `environment`  |
+| 6   | ワークフロー YAML / パイプライン定義   | `github_repository_file` / `azuredevops_build_definition`                        | `workflow_gen` |
+| 7   | ACA ジョブ（専用ランナー、オプション） | `azurerm_container_app_job`                                                      | `runner`       |
+
+**合計: 0 リソースグループ（VCS API + オプションで Layer 2 の Project RG を使用）、リポジトリあたり約 7+ リソース（N = 環境数）。**
+
+### サブモジュール
+
 | サブモジュール | 責務                                                           | プラットフォーム非依存? | ステータス |
 | -------------- | -------------------------------------------------------------- | ----------------------- | ---------- |
 | `project_repo` | 抽象: リポジトリ作成 + ブランチ保護                            | いいえ（ディスパッチ）  | 新規       |
 | `environment`  | 抽象: 環境作成 + 保護ルール + UAMI バインディング              | いいえ（ディスパッチ）  | 新規       |
 | `runner`       | 抽象: リポジトリごとのランナー登録（オプション、専用プール用） | いいえ（ディスパッチ）  | 新規       |
+| `workflow_gen` | CI/CD ワークフロー/パイプライン生成（プロファイル駆動）        | いいえ（ディスパッチ）  | 新規       |
 
 ### `project_repo` — 抽象モジュール
 
@@ -263,6 +410,21 @@ module "repo" {
 
 - `modules/project_repo/github.tf` — `github_repository` + `github_branch_protection_v3`
 - `modules/project_repo/azuredevops.tf` — `azuredevops_git_repository` + ブランチポリシー
+
+**デプロイされるリソース（GitHub）:**
+
+| リソース          | Terraform タイプ              | 目的                                                     |
+| ----------------- | ----------------------------- | -------------------------------------------------------- |
+| GitHub リポジトリ | `github_repository`           | 標準ファイルレイアウトのプロジェクトソースリポジトリ     |
+| ブランチ保護      | `github_branch_protection_v3` | ブランチ保護ルール（レビュー、ステータスチェック）の適用 |
+| リポジトリ設定    | `github_repository` 属性      | 可視性、マージ設定、機能、テンプレート設定               |
+
+**デプロイされるリソース（Azure DevOps）:**
+
+| リソース           | Terraform タイプ              | 目的                                         |
+| ------------------ | ----------------------------- | -------------------------------------------- |
+| ADO Git リポジトリ | `azuredevops_git_repository`  | プロジェクトのソースリポジトリ               |
+| ブランチポリシー   | `azuredevops_branch_policy_*` | ブランチ保護（レビュアー、ビルド検証）の適用 |
 
 **出力:** `repo_id`、`repo_url`、`repo_full_name`
 
@@ -292,7 +454,39 @@ module "env" {
 - `modules/environment/github.tf` — `github_repository_environment` + デプロイメント保護ルール
 - `modules/environment/azuredevops.tf` — `azuredevops_environment` + 承認 + チェック
 
+**デプロイされるリソース（GitHub）:**
+
+| リソース                 | Terraform タイプ                                  | 目的                                                      |
+| ------------------------ | ------------------------------------------------- | --------------------------------------------------------- |
+| GitHub 環境              | `github_repository_environment`                   | リポジトリにバインドされたデプロイメントターゲット        |
+| デプロイメント保護ルール | `github_repository_environment_deployment_policy` | レビュアー要件、待機タイマー、ブランチ制約                |
+| 環境シークレット         | `github_actions_environment_secret`               | 環境 UAMI の OIDC クライアント ID とサブスクリプション ID |
+
+**デプロイされるリソース（Azure DevOps）:**
+
+| リソース     | Terraform タイプ                      | 目的                                         |
+| ------------ | ------------------------------------- | -------------------------------------------- |
+| ADO 環境     | `azuredevops_environment`             | ADO パイプラインのデプロイメントターゲット   |
+| 承認チェック | `azuredevops_check_approval`          | デプロイメント前のレビュアー要件             |
+| サービス接続 | `azuredevops_serviceendpoint_azurerm` | 環境 UAMI にバインドされた OIDC サービス接続 |
+
 **出力:** `environment_id`、`environment_name`
+
+### `workflow_gen`
+
+プロファイル駆動の CI/CD ワークフローまたはパイプラインファイルを生成。
+
+**デプロイされるリソース（GitHub）:**
+
+| リソース                   | Terraform タイプ         | 目的                                                                   |
+| -------------------------- | ------------------------ | ---------------------------------------------------------------------- |
+| ワークフロー YAML ファイル | `github_repository_file` | (env × job) マトリクスをターゲットとする標準化 plan/apply ワークフロー |
+
+**デプロイされるリソース（Azure DevOps）:**
+
+| リソース         | Terraform タイプ               | 目的                                                           |
+| ---------------- | ------------------------------ | -------------------------------------------------------------- |
+| パイプライン定義 | `azuredevops_build_definition` | (env × job) マトリクスをターゲットとする YAML パイプライン定義 |
 
 ### `runner`（リポジトリレベル、オプション）
 
@@ -309,6 +503,8 @@ module "runner" {
   runner_labels = ["self-hosted", var.project_name, var.repo_name]
 }
 ```
+
+**デプロイされるリソース:** Layer 2 の `runner` モジュールと同一（ACA ジョブ + ランナーグループ/エージェントプール登録）だが、単一リポジトリにスコープ。
 
 ---
 

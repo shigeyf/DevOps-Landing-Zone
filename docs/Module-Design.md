@@ -57,6 +57,22 @@ Each layer reads the previous layer's outputs via `terraform_remote_state`. Laye
 
 The Bootstrap layer creates the foundational state backend and secret store for the entire DevOps Landing Zone. It is applied **once** per organization (rarely re-applied) and uses a local state file that is migrated to the Storage Account it creates.
 
+### Layer 0 — Consolidated Resource Inventory
+
+| #   | Resource                    | Azure Type / Terraform Type      | Resource Group    | Sub-Module  |
+| --- | --------------------------- | -------------------------------- | ----------------- | ----------- |
+| 1   | Bootstrap Resource Group    | `azurerm_resource_group`         | _(self)_          | `bootstrap` |
+| 2   | Layer 1 Storage Account     | `azurerm_storage_account`        | Bootstrap RG      | `bootstrap` |
+| 3   | `tfstate` blob containers   | `azurerm_storage_container`      | Bootstrap RG (SA) | `bootstrap` |
+| 4   | Bootstrap Key Vault         | `azurerm_key_vault`              | Bootstrap RG      | `bootstrap` |
+| 5   | `tfbackend_cmk` Key         | `azurerm_key_vault_key`          | Bootstrap RG (KV) | `bootstrap` |
+| 6   | Bootstrap UAMI              | `azurerm_user_assigned_identity` | Bootstrap RG      | `bootstrap` |
+| 7   | `azurerm.tfbackend` configs | `local_file`                     | _(local disk)_    | `bootstrap` |
+
+**Total: 1 Resource Group, 7 resources.**
+
+### Sub-Modules
+
 | Sub-Module  | Responsibility                                | Platform-Agnostic? | Status   |
 | ----------- | --------------------------------------------- | ------------------ | -------- |
 | `bootstrap` | RG + Storage Account + Key Vault + CMK + UAMI | Yes                | Existing |
@@ -84,6 +100,35 @@ Creates the Layer 1 state backend and its protection chain.
 ## 4. Layer 1: Organization LZ Sub-Modules (devops-org-lz)
 
 The Org LZ is a single root module that uses existing and new sub-modules to provision organization-wide shared infrastructure.
+
+### Layer 1 — Consolidated Resource Inventory
+
+| #   | Resource                              | Azure Type / Terraform Type             | Resource Group | Sub-Module       |
+| --- | ------------------------------------- | --------------------------------------- | -------------- | ---------------- |
+| 1   | Network RG                            | `azurerm_resource_group`                | _(self)_       | `vnet`           |
+| 2   | Platform LZ VNet                      | `azurerm_virtual_network`               | Network RG     | `vnet`           |
+| 3   | Subnets (runner, devbox, PE, etc.)    | `azurerm_subnet`                        | Network RG     | `vnet`           |
+| 4   | NAT Gateway _(if configured)_         | `azurerm_nat_gateway`                   | Network RG     | `vnet`           |
+| 5   | NAT Gateway Public IP                 | `azurerm_public_ip`                     | Network RG     | `vnet`           |
+| 6   | Private DNS Zones (blob, vault, etc.) | `azurerm_private_dns_zone`              | Network RG     | `vnet`           |
+| 7   | Private Endpoints (Layer 1 SA, KV)    | `azurerm_private_endpoint`              | Network RG     | `vnet`           |
+| 8   | Agents RG                             | `azurerm_resource_group`                | _(self)_       | `acr`            |
+| 9   | Azure Container Registry              | `azurerm_container_registry`            | Agents RG      | `acr`            |
+| 10  | ACR Build Task                        | `azurerm_container_registry_task`       | Agents RG      | `acr`            |
+| 11  | ACR Private Endpoint                  | `azurerm_private_endpoint`              | Agents RG      | `acr`            |
+| 12  | Log Analytics Workspace               | `azurerm_log_analytics_workspace`       | Agents RG      | `acr`            |
+| 13  | Container-Run UAMI                    | `azurerm_user_assigned_identity`        | Agents RG      | `acr`            |
+| 14  | DevBox RG                             | `azurerm_resource_group`                | _(self)_       | `devcenter`      |
+| 15  | Dev Center                            | `azurerm_dev_center`                    | DevBox RG      | `devcenter`      |
+| 16  | Dev Box Definitions                   | `azurerm_dev_center_dev_box_definition` | DevBox RG      | `devcenter`      |
+| 17  | KV secrets (VCS PATs)                 | `azurerm_key_vault_secret`              | Bootstrap KV   | `devcenter`      |
+| 18  | Org-level rulesets _(GitHub)_         | `github_organization_ruleset`           | —              | `org_governance` |
+| 19  | Runner groups _(GitHub)_              | `github_actions_runner_group`           | —              | `org_governance` |
+| 20  | Agent pools _(ADO)_                   | `azuredevops_agent_pool`                | —              | `org_governance` |
+
+**Total: 3 Resource Groups (Network RG, Agents RG, DevBox RG), ~20 resources.**
+
+### Sub-Modules
 
 | Sub-Module       | Responsibility                                            | Platform-Agnostic? | Status   |
 | ---------------- | --------------------------------------------------------- | ------------------ | -------- |
@@ -180,6 +225,33 @@ Creates the organization-wide Dev Center and Dev Box catalog.
 ## 5. Layer 2: Project LZ Sub-Modules (devops-project-lz)
 
 The Project LZ provisions per-project infrastructure. It does **not** create repositories or environments — those belong to Layer 3.
+
+### Layer 2 — Consolidated Resource Inventory (per project)
+
+| #   | Resource                             | Azure Type / Terraform Type                              | Resource Group | Sub-Module         |
+| --- | ------------------------------------ | -------------------------------------------------------- | -------------- | ------------------ |
+| 1   | Project Resource Group               | `azurerm_resource_group`                                 | _(self)_       | `project_state`    |
+| 2   | Layer 2 Storage Account              | `azurerm_storage_account`                                | Project RG     | `project_state`    |
+| 3   | Layer 2 blob containers              | `azurerm_storage_container`                              | Project RG     | `project_state`    |
+| 4   | Project Key Vault                    | `azurerm_key_vault`                                      | Project RG     | `project_state`    |
+| 5   | Layer 2 Private Endpoint             | `azurerm_private_endpoint`                               | Project RG     | `project_state`    |
+| 6   | Layer 2 PE DNS zone link             | `azurerm_private_dns_zone_virtual_network_link`          | Project RG     | `project_state`    |
+| 7   | 7 Project UAMIs                      | `azurerm_user_assigned_identity` (×7)                    | Project RG     | `project_identity` |
+| 8   | OIDC Federated Credentials (×7)      | `azurerm_federated_identity_credential`                  | Project RG     | `project_identity` |
+| 9   | Subscription role assignments        | `azurerm_role_assignment` (conditional)                  | _(sub scope)_  | `project_identity` |
+| 10  | Project ACA subnet _(platform mode)_ | `azurerm_subnet`                                         | Network RG     | `project_network`  |
+| 11  | ACA Environment                      | `azurerm_container_app_environment`                      | Project RG     | `aca_env`          |
+| 12  | ACA Environment DNS zone link        | `azurerm_private_dns_zone_virtual_network_link`          | Project RG     | `aca_env`          |
+| 13  | DevCenter Project                    | `azurerm_dev_center_project`                             | Project RG     | `devbox_project`   |
+| 14  | Dev Box Pool                         | `azurerm_dev_center_project_pool`                        | Project RG     | `devbox_project`   |
+| 15  | Network Connection                   | `azurerm_dev_center_network_connection`                  | Project RG     | `devbox_project`   |
+| 16  | Dev Box role assignments             | `azurerm_role_assignment`                                | Project RG     | `devbox_project`   |
+| 17  | ACA Job (GitHub runner or ADO agent) | `azurerm_container_app_job`                              | Project RG     | `runner`           |
+| 18  | Runner group/agent pool registration | `github_actions_runner_group` / `azuredevops_agent_pool` | —              | `runner`           |
+
+**Total: 1 Resource Group (Project RG), ~18 resources per project.**
+
+### Sub-Modules
 
 | Sub-Module         | Responsibility                                                           | Platform-Agnostic? | Status   |
 | ------------------ | ------------------------------------------------------------------------ | ------------------ | -------- |
@@ -291,6 +363,22 @@ Abstract module for CI/CD runner registration.
 ## 6. Layer 3: Repo LZ Sub-Modules (devops-repo-lz)
 
 The Repo LZ provisions individual repositories and their environments. Each repository gets its own Terraform state, enabling independent lifecycle management.
+
+### Layer 3 — Consolidated Resource Inventory (per repository)
+
+| #   | Resource                                     | Terraform Type / Platform                                                        | Sub-Module     |
+| --- | -------------------------------------------- | -------------------------------------------------------------------------------- | -------------- |
+| 1   | GitHub Repository / ADO Git Repository       | `github_repository` / `azuredevops_git_repository`                               | `project_repo` |
+| 2   | Branch protection / policies                 | `github_branch_protection_v3` / `azuredevops_branch_policy_*`                    | `project_repo` |
+| 3   | GitHub Environment / ADO Environment (×N)    | `github_repository_environment` / `azuredevops_environment`                      | `environment`  |
+| 4   | Deployment protection rules / approvals (×N) | `github_repository_environment_deployment_policy` / `azuredevops_check_approval` | `environment`  |
+| 5   | Environment secrets / service connections    | `github_actions_environment_secret` / `azuredevops_serviceendpoint_azurerm`      | `environment`  |
+| 6   | Workflow YAML / pipeline definitions         | `github_repository_file` / `azuredevops_build_definition`                        | `workflow_gen` |
+| 7   | ACA Job (dedicated runner, optional)         | `azurerm_container_app_job`                                                      | `runner`       |
+
+**Total: 0 Resource Groups (uses VCS APIs + optionally Project RG from Layer 2), ~7+ resources per repository (N = number of environments).**
+
+### Sub-Modules
 
 | Sub-Module     | Responsibility                                                         | Platform-Agnostic? | Status |
 | -------------- | ---------------------------------------------------------------------- | ------------------ | ------ |
