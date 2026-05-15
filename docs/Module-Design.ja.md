@@ -105,23 +105,23 @@ Org LZ は、既存および新規のサブモジュールを使用して組織�
 
 | #   | リソース                              | Azure タイプ / Terraform タイプ         | リソースグループ | サブモジュール   |
 | --- | ------------------------------------- | --------------------------------------- | ---------------- | ---------------- |
-| 1   | ネットワーク RG                       | `azurerm_resource_group`                | _(自身)_         | `vnet`           |
-| 2   | プラットフォーム LZ VNet              | `azurerm_virtual_network`               | Network RG       | `vnet`           |
-| 3   | サブネット（ランナー、DevBox、PE 等） | `azurerm_subnet`                        | Network RG       | `vnet`           |
-| 4   | NAT Gateway（設定時）                 | `azurerm_nat_gateway`                   | Network RG       | `vnet`           |
-| 5   | NAT Gateway パブリック IP             | `azurerm_public_ip`                     | Network RG       | `vnet`           |
-| 6   | プライベート DNS ゾーン               | `azurerm_private_dns_zone`              | Network RG       | `vnet`           |
-| 7   | プライベートエンドポイント（SA、KV）  | `azurerm_private_endpoint`              | Network RG       | `vnet`           |
-| 8   | Agents RG                             | `azurerm_resource_group`                | _(自身)_         | `acr`            |
-| 9   | Azure Container Registry              | `azurerm_container_registry`            | Agents RG        | `acr`            |
-| 10  | ACR ビルドタスク                      | `azurerm_container_registry_task`       | Agents RG        | `acr`            |
-| 11  | ACR プライベートエンドポイント        | `azurerm_private_endpoint`              | Agents RG        | `acr`            |
-| 12  | Log Analytics ワークスペース          | `azurerm_log_analytics_workspace`       | Agents RG        | `acr`            |
-| 13  | Container-Run UAMI                    | `azurerm_user_assigned_identity`        | Agents RG        | `acr`            |
-| 14  | DevBox RG                             | `azurerm_resource_group`                | _(自身)_         | `devcenter`      |
-| 15  | Dev Center                            | `azurerm_dev_center`                    | DevBox RG        | `devcenter`      |
-| 16  | Dev Box Definitions                   | `azurerm_dev_center_dev_box_definition` | DevBox RG        | `devcenter`      |
-| 17  | KV シークレット（VCS PAT）            | `azurerm_key_vault_secret`              | Bootstrap KV     | `devcenter`      |
+| 1   | ネットワーク RG                       | `azurerm_resource_group`                | _(自身)_         | `org_vnet`       |
+| 2   | プラットフォーム LZ VNet              | `azurerm_virtual_network`               | Network RG       | `org_vnet`       |
+| 3   | サブネット（ランナー、DevBox、PE 等） | `azurerm_subnet`                        | Network RG       | `org_vnet`       |
+| 4   | NAT Gateway（設定時）                 | `azurerm_nat_gateway`                   | Network RG       | `org_vnet`       |
+| 5   | NAT Gateway パブリック IP             | `azurerm_public_ip`                     | Network RG       | `org_vnet`       |
+| 6   | プライベート DNS ゾーン               | `azurerm_private_dns_zone`              | Network RG       | `org_vnet`       |
+| 7   | プライベートエンドポイント（SA、KV）  | `azurerm_private_endpoint`              | Network RG       | `org_vnet`       |
+| 8   | Agents RG                             | `azurerm_resource_group`                | _(自身)_         | `org_acr`        |
+| 9   | Azure Container Registry              | `azurerm_container_registry`            | Agents RG        | `org_acr`        |
+| 10  | ACR ビルドタスク                      | `azurerm_container_registry_task`       | Agents RG        | `org_acr`        |
+| 11  | ACR プライベートエンドポイント        | `azurerm_private_endpoint`              | Agents RG        | `org_acr`        |
+| 12  | Log Analytics ワークスペース          | `azurerm_log_analytics_workspace`       | Agents RG        | `org_acr`        |
+| 13  | Container-Run UAMI                    | `azurerm_user_assigned_identity`        | Agents RG        | `org_acr`        |
+| 14  | DevBox RG                             | `azurerm_resource_group`                | _(自身)_         | `org_devcenter`  |
+| 15  | Dev Center                            | `azurerm_dev_center`                    | DevBox RG        | `org_devcenter`  |
+| 16  | Dev Box Definitions                   | `azurerm_dev_center_dev_box_definition` | DevBox RG        | `org_devcenter`  |
+| 17  | KV シークレット（VCS PAT）            | `azurerm_key_vault_secret`              | Bootstrap KV     | `org_devcenter`  |
 | 18  | 組織レベルルールセット（GitHub）      | `github_organization_ruleset`           | —                | `org_governance` |
 | 19  | ランナーグループ（GitHub）            | `github_actions_runner_group`           | —                | `org_governance` |
 | 20  | エージェントプール（ADO）             | `azuredevops_agent_pool`                | —                | `org_governance` |
@@ -132,16 +132,16 @@ Org LZ は、既存および新規のサブモジュールを使用して組織�
 
 | サブモジュール   | 責務                                                                       | プラットフォーム非依存? | ステータス |
 | ---------------- | -------------------------------------------------------------------------- | ----------------------- | ---------- |
-| `vnet`           | プラットフォーム VNet + サブネット + NAT Gateway + プライベート DNS ゾーン | はい                    | 既存       |
-| `acr`            | Azure Container Registry + イメージビルドタスク                            | はい                    | 既存       |
+| `org_vnet`       | プラットフォーム VNet + サブネット + NAT Gateway + プライベート DNS ゾーン | はい                    | 既存       |
+| `org_acr`        | Azure Container Registry + イメージビルドタスク                            | はい                    | 既存       |
 | `org_governance` | 組織レベルのルールセット、ランナーグループ、エージェントプール             | いいえ（ディスパッチ）  | 新規       |
-| `devcenter`      | Dev Center + Dev Box Definitions（組織カタログ）                           | はい                    | 新規       |
+| `org_devcenter`  | Dev Center + Dev Box Definitions（組織カタログ）                           | はい                    | 新規       |
 
 > [!NOTE]
 > `resource_providers` はターゲット設計では意図的に**モジュール化しない**。
 > リソースプロバイダー登録は、複数プロジェクト間での state 所有権競合を避けるため、再利用サブモジュール外で別管理とする。
 
-### `vnet`
+### `org_vnet`
 
 プラットフォーム管理 VNet と関連ネットワークインフラを作成。
 
@@ -157,7 +157,7 @@ Org LZ は、既存および新規のサブモジュールを使用して組織�
 | プライベートエンドポイント（Layer 1 SA、KV） | `azurerm_private_endpoint` | ブートストラップ SA と KV へのプライベート接続                               |
 | ネットワーク RG                              | `azurerm_resource_group`   | VNet、サブネット、NAT、DNS ゾーン、PE を格納                                 |
 
-### `acr`
+### `org_acr`
 
 共有コンテナレジストリを作成。
 
@@ -207,7 +207,7 @@ module "org_governance" {
 | ブランチポリシー   | `azuredevops_branch_policy_*`  | ブランチ保護を組織全体で適用             |
 | プロジェクト設定   | `azuredevops_project_features` | プロジェクトのデフォルト機能設定         |
 
-### `devcenter`
+### `org_devcenter`
 
 組織全体の Dev Center と Dev Box カタログを作成。
 
@@ -542,13 +542,13 @@ modules/<module_name>/
 └─────────────────────────────────────────────────────────────────────────┘
                               │ bootstrap.config.json
                               ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│ devops-org-lz (Layer 1 ルートモジュール)                                  │
-│                                                                         │
-│  ┌──────┐ ┌─────┐ ┌───────────────┐ ┌──────────┐                      │
-│  │ vnet │ │ acr │ │org_governance │ │devcenter │                      │
-│  └──────┘ └─────┘ └───────────────┘ └──────────┘                      │
-└─────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ devops-org-lz (Layer 1 ルートモジュール)                                      │
+│                                                                              │
+│  ┌─────────┐ ┌─────────┐ ┌───────────────┐ ┌──────────────┐               │
+│  │org_vnet  │ │org_acr  │ │org_governance │ │org_devcenter │               │
+│  └─────────┘ └─────────┘ └───────────────┘ └──────────────┘               │
+└──────────────────────────────────────────────────────────────────────────────┘
                               │ remote_state
                               ▼
 ┌─────────────────────────────────────────────────────────────────────────┐

@@ -105,23 +105,23 @@ The Org LZ is a single root module that uses existing and new sub-modules to pro
 
 | #   | Resource                              | Azure Type / Terraform Type             | Resource Group | Sub-Module       |
 | --- | ------------------------------------- | --------------------------------------- | -------------- | ---------------- |
-| 1   | Network RG                            | `azurerm_resource_group`                | _(self)_       | `vnet`           |
-| 2   | Platform LZ VNet                      | `azurerm_virtual_network`               | Network RG     | `vnet`           |
-| 3   | Subnets (runner, devbox, PE, etc.)    | `azurerm_subnet`                        | Network RG     | `vnet`           |
-| 4   | NAT Gateway _(if configured)_         | `azurerm_nat_gateway`                   | Network RG     | `vnet`           |
-| 5   | NAT Gateway Public IP                 | `azurerm_public_ip`                     | Network RG     | `vnet`           |
-| 6   | Private DNS Zones (blob, vault, etc.) | `azurerm_private_dns_zone`              | Network RG     | `vnet`           |
-| 7   | Private Endpoints (Layer 1 SA, KV)    | `azurerm_private_endpoint`              | Network RG     | `vnet`           |
-| 8   | Agents RG                             | `azurerm_resource_group`                | _(self)_       | `acr`            |
-| 9   | Azure Container Registry              | `azurerm_container_registry`            | Agents RG      | `acr`            |
-| 10  | ACR Build Task                        | `azurerm_container_registry_task`       | Agents RG      | `acr`            |
-| 11  | ACR Private Endpoint                  | `azurerm_private_endpoint`              | Agents RG      | `acr`            |
-| 12  | Log Analytics Workspace               | `azurerm_log_analytics_workspace`       | Agents RG      | `acr`            |
-| 13  | Container-Run UAMI                    | `azurerm_user_assigned_identity`        | Agents RG      | `acr`            |
-| 14  | DevBox RG                             | `azurerm_resource_group`                | _(self)_       | `devcenter`      |
-| 15  | Dev Center                            | `azurerm_dev_center`                    | DevBox RG      | `devcenter`      |
-| 16  | Dev Box Definitions                   | `azurerm_dev_center_dev_box_definition` | DevBox RG      | `devcenter`      |
-| 17  | KV secrets (VCS PATs)                 | `azurerm_key_vault_secret`              | Bootstrap KV   | `devcenter`      |
+| 1   | Network RG                            | `azurerm_resource_group`                | _(self)_       | `org_vnet`       |
+| 2   | Platform LZ VNet                      | `azurerm_virtual_network`               | Network RG     | `org_vnet`       |
+| 3   | Subnets (runner, devbox, PE, etc.)    | `azurerm_subnet`                        | Network RG     | `org_vnet`       |
+| 4   | NAT Gateway _(if configured)_         | `azurerm_nat_gateway`                   | Network RG     | `org_vnet`       |
+| 5   | NAT Gateway Public IP                 | `azurerm_public_ip`                     | Network RG     | `org_vnet`       |
+| 6   | Private DNS Zones (blob, vault, etc.) | `azurerm_private_dns_zone`              | Network RG     | `org_vnet`       |
+| 7   | Private Endpoints (Layer 1 SA, KV)    | `azurerm_private_endpoint`              | Network RG     | `org_vnet`       |
+| 8   | Agents RG                             | `azurerm_resource_group`                | _(self)_       | `org_acr`        |
+| 9   | Azure Container Registry              | `azurerm_container_registry`            | Agents RG      | `org_acr`        |
+| 10  | ACR Build Task                        | `azurerm_container_registry_task`       | Agents RG      | `org_acr`        |
+| 11  | ACR Private Endpoint                  | `azurerm_private_endpoint`              | Agents RG      | `org_acr`        |
+| 12  | Log Analytics Workspace               | `azurerm_log_analytics_workspace`       | Agents RG      | `org_acr`        |
+| 13  | Container-Run UAMI                    | `azurerm_user_assigned_identity`        | Agents RG      | `org_acr`        |
+| 14  | DevBox RG                             | `azurerm_resource_group`                | _(self)_       | `org_devcenter`  |
+| 15  | Dev Center                            | `azurerm_dev_center`                    | DevBox RG      | `org_devcenter`  |
+| 16  | Dev Box Definitions                   | `azurerm_dev_center_dev_box_definition` | DevBox RG      | `org_devcenter`  |
+| 17  | KV secrets (VCS PATs)                 | `azurerm_key_vault_secret`              | Bootstrap KV   | `org_devcenter`  |
 | 18  | Org-level rulesets _(GitHub)_         | `github_organization_ruleset`           | —              | `org_governance` |
 | 19  | Runner groups _(GitHub)_              | `github_actions_runner_group`           | —              | `org_governance` |
 | 20  | Agent pools _(ADO)_                   | `azuredevops_agent_pool`                | —              | `org_governance` |
@@ -132,16 +132,16 @@ The Org LZ is a single root module that uses existing and new sub-modules to pro
 
 | Sub-Module       | Responsibility                                            | Platform-Agnostic? | Status   |
 | ---------------- | --------------------------------------------------------- | ------------------ | -------- |
-| `vnet`           | Platform VNet + subnets + NAT Gateway + Private DNS zones | Yes                | Existing |
-| `acr`            | Azure Container Registry + image build tasks              | Yes                | Existing |
+| `org_vnet`       | Platform VNet + subnets + NAT Gateway + Private DNS zones | Yes                | Existing |
+| `org_acr`        | Azure Container Registry + image build tasks              | Yes                | Existing |
 | `org_governance` | Org-level rulesets, runner groups, agent pools            | No (dispatches)    | New      |
-| `devcenter`      | Dev Center + Dev Box Definitions (org catalog)            | Yes                | New      |
+| `org_devcenter`  | Dev Center + Dev Box Definitions (org catalog)            | Yes                | New      |
 
 > [!NOTE]
 > `resource_providers` is intentionally **not** modularized in the target design.
 > Resource provider registrations are managed separately (outside reusable sub-modules) to avoid cross-project state ownership conflicts.
 
-### `vnet`
+### `org_vnet`
 
 Creates the platform-managed VNet and associated network infrastructure.
 
@@ -157,7 +157,7 @@ Creates the platform-managed VNet and associated network infrastructure.
 | Private Endpoints (Layer 1 SA, KV)             | `azurerm_private_endpoint` | Private connectivity to bootstrap SA and KV                                              |
 | Network RG                                     | `azurerm_resource_group`   | Hosts VNet, subnets, NAT, DNS zones, and PEs                                             |
 
-### `acr`
+### `org_acr`
 
 Creates the shared container registry for runner images.
 
@@ -207,7 +207,7 @@ Internally dispatches to:
 | Branch policies  | `azuredevops_branch_policy_*`  | Enforce branch protection org-wide    |
 | Project settings | `azuredevops_project_features` | Default project feature configuration |
 
-### `devcenter`
+### `org_devcenter`
 
 Creates the organization-wide Dev Center and Dev Box catalog.
 
@@ -542,13 +542,13 @@ modules/<module_name>/
 └─────────────────────────────────────────────────────────────────────────┘
                               │ bootstrap.config.json
                               ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│ devops-org-lz (Layer 1 Root Module)                                      │
-│                                                                         │
-│  ┌──────┐ ┌─────┐ ┌───────────────┐ ┌──────────┐                      │
-│  │ vnet │ │ acr │ │org_governance │ │devcenter │                      │
-│  └──────┘ └─────┘ └───────────────┘ └──────────┘                      │
-└─────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ devops-org-lz (Layer 1 Root Module)                                         │
+│                                                                              │
+│  ┌─────────┐ ┌─────────┐ ┌───────────────┐ ┌──────────────┐               │
+│  │org_vnet  │ │org_acr  │ │org_governance │ │org_devcenter │               │
+│  └─────────┘ └─────────┘ └───────────────┘ └──────────────┘               │
+└──────────────────────────────────────────────────────────────────────────────┘
                               │ remote_state
                               ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
