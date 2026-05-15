@@ -39,13 +39,13 @@ Each layer reads the previous layer's outputs via `terraform_remote_state`. Laye
 
 ## 2. Module Design Principles
 
-1. **Abstract over VCS platform** — Sub-modules like `project_repo`, `environment`, and `runner` accept a `vcs_provider` input (`"github"` or `"azuredevops"`) and internally dispatch to the correct implementation. Callers get a uniform input/output contract.
+1. **Abstract over VCS platform** — Sub-modules like `repo_repository`, `repo_environment`, and `repo_runner` accept a `vcs_provider` input (`"github"` or `"azuredevops"`) and internally dispatch to the correct implementation. Callers get a uniform input/output contract.
 
 2. **Single responsibility** — Each sub-module owns exactly one domain concept (e.g., project state storage, project identity, repository provisioning, environment binding).
 
-3. **Platform-agnostic where possible** — Modules dealing with pure Azure resources (`project_state`, `project_identity`, `project_network`, `aca_env`) work identically for both GitHub and Azure DevOps projects.
+3. **Platform-agnostic where possible** — Modules dealing with pure Azure resources (`project_state`, `project_identity`, `project_network`) work identically for both GitHub and Azure DevOps projects.
 
-4. **VCS-specific only where necessary** — Modules that interact with VCS APIs (`project_repo`, `environment`, `runner`) use the abstract dispatch pattern.
+4. **VCS-specific only where necessary** — Modules that interact with VCS APIs (`repo_repository`, `repo_environment`, `repo_runner`) use the abstract dispatch pattern.
 
 5. **Composable, not nested** — Sub-modules do not call each other. Root modules (`project_github`, `repo_github`, etc.) compose sub-modules and pass outputs between them.
 
@@ -240,27 +240,26 @@ The Project LZ provisions per-project infrastructure. It does **not** create rep
 | 8   | OIDC Federated Credentials (×7)      | `azurerm_federated_identity_credential`                  | Project RG     | `project_identity` |
 | 9   | Subscription role assignments        | `azurerm_role_assignment` (conditional)                  | _(sub scope)_  | `project_identity` |
 | 10  | Project ACA subnet _(platform mode)_ | `azurerm_subnet`                                         | Network RG     | `project_network`  |
-| 11  | ACA Environment                      | `azurerm_container_app_environment`                      | Project RG     | `aca_env`          |
-| 12  | ACA Environment DNS zone link        | `azurerm_private_dns_zone_virtual_network_link`          | Project RG     | `aca_env`          |
-| 13  | DevCenter Project                    | `azurerm_dev_center_project`                             | Project RG     | `devbox_project`   |
-| 14  | Dev Box Pool                         | `azurerm_dev_center_project_pool`                        | Project RG     | `devbox_project`   |
-| 15  | Network Connection                   | `azurerm_dev_center_network_connection`                  | Project RG     | `devbox_project`   |
-| 16  | Dev Box role assignments             | `azurerm_role_assignment`                                | Project RG     | `devbox_project`   |
-| 17  | ACA Job (GitHub runner or ADO agent) | `azurerm_container_app_job`                              | Project RG     | `runner`           |
-| 18  | Runner group/agent pool registration | `github_actions_runner_group` / `azuredevops_agent_pool` | —              | `runner`           |
+| 11  | ACA Environment                      | `azurerm_container_app_environment`                      | Project RG     | `project_runner`   |
+| 12  | ACA Environment DNS zone link        | `azurerm_private_dns_zone_virtual_network_link`          | Project RG     | `project_runner`   |
+| 13  | DevCenter Project                    | `azurerm_dev_center_project`                             | Project RG     | `project_devbox`   |
+| 14  | Dev Box Pool                         | `azurerm_dev_center_project_pool`                        | Project RG     | `project_devbox`   |
+| 15  | Network Connection                   | `azurerm_dev_center_network_connection`                  | Project RG     | `project_devbox`   |
+| 16  | Dev Box role assignments             | `azurerm_role_assignment`                                | Project RG     | `project_devbox`   |
+| 17  | ACA Job (GitHub runner or ADO agent) | `azurerm_container_app_job`                              | Project RG     | `project_runner`   |
+| 18  | Runner group/agent pool registration | `github_actions_runner_group` / `azuredevops_agent_pool` | —              | `project_runner`   |
 
 **Total: 1 Resource Group (Project RG), ~18 resources per project.**
 
 ### Sub-Modules
 
-| Sub-Module         | Responsibility                                                           | Platform-Agnostic? | Status   |
-| ------------------ | ------------------------------------------------------------------------ | ------------------ | -------- |
-| `project_state`    | Layer 2 Storage Account + Project Key Vault + Project RG                 | Yes                | New      |
-| `project_identity` | 7 UAMIs + OIDC federated credentials + subscription RBAC                 | Yes                | New      |
-| `project_network`  | Subnet slice (platform mode) or BYO VNet validation                      | Yes                | New      |
-| `aca_env`          | ACA Environment bound to project's network context                       | Yes                | Existing |
-| `devbox_project`   | DevCenter Project + Dev Box Pool + Network Connection                    | Yes                | New      |
-| `runner`           | ACA job definition registered with GitHub runner group or ADO agent pool | No (dispatches)    | New      |
+| Sub-Module         | Responsibility                                                                                                     | Platform-Agnostic? | Status |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------ | ------------------ | ------ |
+| `project_state`    | Layer 2 Storage Account + Project Key Vault + Project RG                                                           | Yes                | New    |
+| `project_identity` | 7 UAMIs + OIDC federated credentials + subscription RBAC                                                           | Yes                | New    |
+| `project_network`  | Subnet slice (platform mode) or BYO VNet validation                                                                | Yes                | New    |
+| `project_devbox`   | DevCenter Project + Dev Box Pool + Network Connection                                                              | Yes                | New    |
+| `project_runner`   | ACA Environment + ACA Job registered with GitHub runner group or ADO agent pool (includes runner compute platform) | No (dispatches)    | New    |
 
 ### `project_state`
 
@@ -316,18 +315,7 @@ Handles the project's DevOps network context.
 | ---------------------------------- | -------------- | --------------------------------------------------------------------- |
 | _(none created — validation only)_ | data sources   | Validates externally-provided VNet/subnet against 7 consistency rules |
 
-### `aca_env`
-
-Creates a project-scoped ACA Environment.
-
-**Deployed resources:**
-
-| Resource                      | Terraform Type                                  | Purpose                                                                     |
-| ----------------------------- | ----------------------------------------------- | --------------------------------------------------------------------------- |
-| ACA Environment               | `azurerm_container_app_environment`             | Runs the project's self-hosted runner Jobs in the project's network context |
-| ACA Environment DNS zone link | `azurerm_private_dns_zone_virtual_network_link` | Links the ACA internal DNS to the project's VNet                            |
-
-### `devbox_project`
+### `project_devbox`
 
 Creates DevCenter project resources.
 
@@ -340,23 +328,31 @@ Creates DevCenter project resources.
 | Network Connection       | `azurerm_dev_center_network_connection` | Binds the pool to the project's runner network context                   |
 | Dev Box role assignments | `azurerm_role_assignment`               | Grants project team access to provision and manage Dev Boxes             |
 
-### `runner` — Abstract Module
+### `project_runner` — Abstract Module
 
-Abstract module for CI/CD runner registration.
+Creates the runner compute platform for a project. This module provisions the ACA Environment (the compute surface) **and** registers an ACA Job as a self-hosted runner within the org-level runner group (GitHub) or agent pool (ADO) created by `org_governance`.
+
+> [!NOTE]
+> **Runner architecture:** `org_governance` (Layer 1) creates the organizational container (runner group / agent pool).
+> `project_runner` (Layer 2) creates the actual compute: ACA Environment + ACA Job + registration into that org-level container.
 
 **Deployed resources (GitHub):**
 
-| Resource                | Terraform Type                | Purpose                                                  |
-| ----------------------- | ----------------------------- | -------------------------------------------------------- |
-| ACA Job (GitHub runner) | `azurerm_container_app_job`   | Self-hosted runner job pulling image from shared ACR     |
-| Runner group membership | `github_actions_runner_group` | Routes project CI jobs to the project's own runner group |
+| Resource                      | Terraform Type                                  | Purpose                                                                     |
+| ----------------------------- | ----------------------------------------------- | --------------------------------------------------------------------------- |
+| ACA Environment               | `azurerm_container_app_environment`             | Runs the project's self-hosted runner Jobs in the project's network context |
+| ACA Environment DNS zone link | `azurerm_private_dns_zone_virtual_network_link` | Links the ACA internal DNS to the project's VNet                            |
+| ACA Job (GitHub runner)       | `azurerm_container_app_job`                     | Self-hosted runner job pulling image from shared ACR                        |
+| Runner group membership       | `github_actions_runner_group`                   | Routes project CI jobs to the project's own runner group                    |
 
 **Deployed resources (Azure DevOps):**
 
-| Resource                | Terraform Type                       | Purpose                                                  |
-| ----------------------- | ------------------------------------ | -------------------------------------------------------- |
-| ACA Job (ADO agent)     | `azurerm_container_app_job`          | Self-hosted agent job pulling image from shared ACR      |
-| Agent pool registration | `azuredevops_agent_pool` (reference) | Routes project pipelines to the project's own agent pool |
+| Resource                      | Terraform Type                                  | Purpose                                                                    |
+| ----------------------------- | ----------------------------------------------- | -------------------------------------------------------------------------- |
+| ACA Environment               | `azurerm_container_app_environment`             | Runs the project's self-hosted agent Jobs in the project's network context |
+| ACA Environment DNS zone link | `azurerm_private_dns_zone_virtual_network_link` | Links the ACA internal DNS to the project's VNet                           |
+| ACA Job (ADO agent)           | `azurerm_container_app_job`                     | Self-hosted agent job pulling image from shared ACR                        |
+| Agent pool registration       | `azuredevops_agent_pool` (reference)            | Routes project pipelines to the project's own agent pool                   |
 
 ---
 
@@ -366,34 +362,34 @@ The Repo LZ provisions individual repositories and their environments. Each repo
 
 ### Layer 3 — Consolidated Resource Inventory (per repository)
 
-| #   | Resource                                     | Terraform Type / Platform                                                        | Sub-Module     |
-| --- | -------------------------------------------- | -------------------------------------------------------------------------------- | -------------- |
-| 1   | GitHub Repository / ADO Git Repository       | `github_repository` / `azuredevops_git_repository`                               | `project_repo` |
-| 2   | Branch protection / policies                 | `github_branch_protection_v3` / `azuredevops_branch_policy_*`                    | `project_repo` |
-| 3   | GitHub Environment / ADO Environment (×N)    | `github_repository_environment` / `azuredevops_environment`                      | `environment`  |
-| 4   | Deployment protection rules / approvals (×N) | `github_repository_environment_deployment_policy` / `azuredevops_check_approval` | `environment`  |
-| 5   | Environment secrets / service connections    | `github_actions_environment_secret` / `azuredevops_serviceendpoint_azurerm`      | `environment`  |
-| 6   | Workflow YAML / pipeline definitions         | `github_repository_file` / `azuredevops_build_definition`                        | `workflow_gen` |
-| 7   | ACA Job (dedicated runner, optional)         | `azurerm_container_app_job`                                                      | `runner`       |
+| #   | Resource                                     | Terraform Type / Platform                                                        | Sub-Module          |
+| --- | -------------------------------------------- | -------------------------------------------------------------------------------- | ------------------- |
+| 1   | GitHub Repository / ADO Git Repository       | `github_repository` / `azuredevops_git_repository`                               | `repo_repository`   |
+| 2   | Branch protection / policies                 | `github_branch_protection_v3` / `azuredevops_branch_policy_*`                    | `repo_repository`   |
+| 3   | GitHub Environment / ADO Environment (×N)    | `github_repository_environment` / `azuredevops_environment`                      | `repo_environment`  |
+| 4   | Deployment protection rules / approvals (×N) | `github_repository_environment_deployment_policy` / `azuredevops_check_approval` | `repo_environment`  |
+| 5   | Environment secrets / service connections    | `github_actions_environment_secret` / `azuredevops_serviceendpoint_azurerm`      | `repo_environment`  |
+| 6   | Workflow YAML / pipeline definitions         | `github_repository_file` / `azuredevops_build_definition`                        | `repo_workflow_gen` |
+| 7   | ACA Job (dedicated runner, optional)         | `azurerm_container_app_job`                                                      | `repo_runner`       |
 
 **Total: 0 Resource Groups (uses VCS APIs + optionally Project RG from Layer 2), ~7+ resources per repository (N = number of environments).**
 
 ### Sub-Modules
 
-| Sub-Module     | Responsibility                                                         | Platform-Agnostic? | Status |
-| -------------- | ---------------------------------------------------------------------- | ------------------ | ------ |
-| `project_repo` | Abstract: Repository creation + branch protection                      | No (dispatches)    | New    |
-| `environment`  | Abstract: Environment creation + protection rules + UAMI binding       | No (dispatches)    | New    |
-| `runner`       | Abstract: Per-repo runner registration (optional, for dedicated pools) | No (dispatches)    | New    |
-| `workflow_gen` | CI/CD workflow/pipeline generation (profile-driven)                    | No (dispatches)    | New    |
+| Sub-Module          | Responsibility                                                         | Platform-Agnostic? | Status |
+| ------------------- | ---------------------------------------------------------------------- | ------------------ | ------ |
+| `repo_repository`   | Abstract: Repository creation + branch protection                      | No (dispatches)    | New    |
+| `repo_environment`  | Abstract: Environment creation + protection rules + UAMI binding       | No (dispatches)    | New    |
+| `repo_runner`       | Abstract: Per-repo runner registration (optional, for dedicated pools) | No (dispatches)    | New    |
+| `repo_workflow_gen` | CI/CD workflow/pipeline generation (profile-driven)                    | No (dispatches)    | New    |
 
-### `project_repo` — Abstract Module
+### `repo_repository` — Abstract Module
 
 Creates a repository with uniform interface regardless of VCS platform:
 
 ```hcl
-module "repo" {
-  source       = "./modules/project_repo"
+module "repo_repository" {
+  source       = "./modules/repo_repository"
   vcs_provider = var.vcs_provider   # "github" | "azuredevops"
 
   # Uniform inputs
@@ -408,8 +404,8 @@ module "repo" {
 
 Internally dispatches to:
 
-- `modules/project_repo/github.tf` — `github_repository` + `github_branch_protection_v3`
-- `modules/project_repo/azuredevops.tf` — `azuredevops_git_repository` + branch policies
+- `modules/repo_repository/github.tf` — `github_repository` + `github_branch_protection_v3`
+- `modules/repo_repository/azuredevops.tf` — `azuredevops_git_repository` + branch policies
 
 **Deployed resources (GitHub):**
 
@@ -428,13 +424,13 @@ Internally dispatches to:
 
 **Outputs:** `repo_id`, `repo_url`, `repo_full_name`
 
-### `environment` — Abstract Module
+### `repo_environment` — Abstract Module
 
 Creates deployment environments with protection rules:
 
 ```hcl
-module "env" {
-  source       = "./modules/environment"
+module "repo_environment" {
+  source       = "./modules/repo_environment"
   vcs_provider = var.vcs_provider
 
   # Uniform inputs
@@ -451,8 +447,8 @@ module "env" {
 
 Internally dispatches to:
 
-- `modules/environment/github.tf` — `github_repository_environment` + deployment protection rules
-- `modules/environment/azuredevops.tf` — `azuredevops_environment` + approvals + checks
+- `modules/repo_environment/github.tf` — `github_repository_environment` + deployment protection rules
+- `modules/repo_environment/azuredevops.tf` — `azuredevops_environment` + approvals + checks
 
 **Deployed resources (GitHub):**
 
@@ -472,7 +468,7 @@ Internally dispatches to:
 
 **Outputs:** `environment_id`, `environment_name`
 
-### `workflow_gen`
+### `repo_workflow_gen`
 
 Generates profile-driven CI/CD workflow or pipeline files.
 
@@ -488,13 +484,13 @@ Generates profile-driven CI/CD workflow or pipeline files.
 | -------------------- | ------------------------------ | ---------------------------------------------------------- |
 | Pipeline definitions | `azuredevops_build_definition` | YAML pipeline definitions targeting the (env × job) matrix |
 
-### `runner` (Repo-level, optional)
+### `repo_runner` (optional) — Abstract Module
 
 For repos that need a dedicated runner (rather than sharing the project-level runner group):
 
 ```hcl
-module "runner" {
-  source       = "./modules/runner"
+module "repo_runner" {
+  source       = "./modules/repo_runner"
   vcs_provider = var.vcs_provider
 
   project_name  = var.project_name
@@ -504,13 +500,13 @@ module "runner" {
 }
 ```
 
-**Deployed resources:** Same as the Layer 2 `runner` module (ACA Job + runner group/agent pool registration) but scoped to a single repository.
+**Deployed resources:** Dedicated ACA Job + runner group/agent pool registration scoped to a single repository (uses the ACA Environment created by `project_runner` in Layer 2).
 
 ---
 
 ## 7. Abstract Module Pattern
 
-All abstract (VCS-dispatching) modules follow this pattern:
+All abstract (VCS-dispatching) modules (e.g., `repo_repository`, `repo_environment`, `repo_runner`, `project_runner`) follow this pattern:
 
 ```text
 modules/<module_name>/
@@ -554,11 +550,11 @@ modules/<module_name>/
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ devops-project-lz (Layer 2 Root Module — one per project)                │
 │                                                                         │
-│  ┌─────────────┐ ┌────────────────┐ ┌───────────────┐ ┌─────────────┐ │
-│  │project_state│ │project_identity│ │project_network│ │   aca_env   │ │
-│  └─────────────┘ └────────────────┘ └───────────────┘ └─────────────┘ │
+│  ┌─────────────┐ ┌────────────────┐ ┌───────────────┐                 │
+│  │project_state│ │project_identity│ │project_network│                 │
+│  └─────────────┘ └────────────────┘ └───────────────┘                 │
 │  ┌──────────────┐ ┌────────────────┐                                   │
-│  │devbox_project│ │    runner      │                                    │
+│  │project_devbox│ │ project_runner │                                    │
 │  └──────────────┘ └────────────────┘                                   │
 └─────────────────────────────────────────────────────────────────────────┘
                               │ remote_state
@@ -566,9 +562,9 @@ modules/<module_name>/
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ devops-repo-lz (Layer 3 Root Module — one per repository)                │
 │                                                                         │
-│  ┌────────────┐ ┌─────────────┐ ┌────────────┐ ┌────────────────────┐ │
-│  │project_repo│ │ environment │ │workflow_gen│ │ runner (optional)  │ │
-│  └────────────┘ └─────────────┘ └────────────┘ └────────────────────┘ │
+│  ┌───────────────┐ ┌────────────────┐ ┌───────────────┐ ┌─────────────────────┐ │
+│  │repo_repository│ │repo_environment│ │repo_workflow_gen│ │repo_runner (optional)│ │
+│  └───────────────┘ └────────────────┘ └───────────────┘ └─────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -578,22 +574,22 @@ modules/<module_name>/
 
 ### Phase 1 — Platform-agnostic project sub-modules
 
-| Priority | Module             | Dependencies           |
-| -------- | ------------------ | ---------------------- |
-| 1        | `project_state`    | None (pure Azure)      |
-| 2        | `project_identity` | None (pure Azure)      |
-| 3        | `project_network`  | Org LZ VNet outputs    |
-| 4        | `aca_env`          | `project_network`      |
-| 5        | `devbox_project`   | `project_network`      |
-| 6        | `runner`           | `aca_env`, VCS context |
+| Priority | Module             | Dependencies                   |
+| -------- | ------------------ | ------------------------------ |
+| 1        | `project_state`    | None (pure Azure)              |
+| 2        | `project_identity` | None (pure Azure)              |
+| 3        | `project_network`  | Org LZ VNet outputs            |
+| 4        | `project_devbox`   | `project_network`              |
+| 5        | `project_runner`   | `project_network`, VCS context |
 
 ### Phase 2 — Abstract repo/environment sub-modules
 
-| Priority | Module         | Dependencies                     |
-| -------- | -------------- | -------------------------------- |
-| 1        | `project_repo` | VCS provider config              |
-| 2        | `environment`  | `project_identity` (UAMIs)       |
-| 3        | `runner`       | `aca_env` (repo-level, optional) |
+| Priority | Module              | Dependencies                            |
+| -------- | ------------------- | --------------------------------------- |
+| 1        | `repo_repository`   | VCS provider config                     |
+| 2        | `repo_environment`  | `project_identity` (UAMIs)              |
+| 3        | `repo_runner`       | `project_runner` (repo-level, optional) |
+| 4        | `repo_workflow_gen` | `repo_repository`                       |
 
 ### Phase 3 — Org-level governance
 
@@ -604,8 +600,8 @@ modules/<module_name>/
 ### Sequencing
 
 1. Implement `project_state` + `project_identity` + `project_network` first (pure Azure, no VCS dependency).
-2. Implement `aca_env` + `devbox_project` + `runner` (project-level compute).
-3. Implement `project_repo` + `environment` (abstract VCS modules for Layer 3).
+2. Implement `project_devbox` + `project_runner` (project-level compute; `project_runner` includes ACA Environment).
+3. Implement `repo_repository` + `repo_environment` + `repo_workflow_gen` (abstract VCS modules for Layer 3).
 4. Implement `org_governance` (abstract governance for Layer 1).
 5. Compose into root modules (`project_github`, `project_azuredevops`, `repo_github`, `repo_azuredevops`).
 
