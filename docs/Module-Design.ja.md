@@ -123,10 +123,8 @@ Org LZ は、既存および新規のサブモジュールを使用して組織�
 | 16  | Dev Box Definitions                   | `azurerm_dev_center_dev_box_definition` | DevBox RG        | `org_devcenter`  |
 | 17  | KV シークレット（VCS PAT）            | `azurerm_key_vault_secret`              | Bootstrap KV     | `org_devcenter`  |
 | 18  | 組織レベルルールセット（GitHub）      | `github_organization_ruleset`           | —                | `org_governance` |
-| 19  | ランナーグループ（GitHub）            | `github_actions_runner_group`           | —                | `org_governance` |
-| 20  | エージェントプール（ADO）             | `azuredevops_agent_pool`                | —                | `org_governance` |
 
-**合計: 3 リソースグループ（Network RG、Agents RG、DevBox RG）、約 20 リソース。**
+**合計: 3 リソースグループ（Network RG、Agents RG、DevBox RG）、約 18 リソース。**
 
 ### サブモジュール
 
@@ -134,7 +132,7 @@ Org LZ は、既存および新規のサブモジュールを使用して組織�
 | ---------------- | -------------------------------------------------------------------------- | ----------------------- | ---------- |
 | `org_vnet`       | プラットフォーム VNet + サブネット + NAT Gateway + プライベート DNS ゾーン | はい                    | 既存       |
 | `org_acr`        | Azure Container Registry + イメージビルドタスク                            | はい                    | 既存       |
-| `org_governance` | 組織レベルのルールセット、ランナーグループ、エージェントプール             | いいえ（ディスパッチ）  | 新規       |
+| `org_governance` | 組織レベルのルールセットおよびリポジトリデフォルト設定                     | いいえ（ディスパッチ）  | 新規       |
 | `org_devcenter`  | Dev Center + Dev Box Definitions（組織カタログ）                           | はい                    | 新規       |
 
 > [!NOTE]
@@ -181,31 +179,34 @@ module "org_governance" {
 
   # 統一入力
   default_branch_rules = var.org_default_branch_rules
-  runner_group_name    = var.runner_group_name
   # ...
 }
 ```
 
 内部でディスパッチ:
 
-- `modules/org_governance/github.tf` — GitHub 組織ルールセット + ランナーグループ
-- `modules/org_governance/azuredevops.tf` — ADO ブランチポリシー + エージェントプール
+- `modules/org_governance/github.tf` — GitHub 組織ルールセット + デフォルト設定
+- `modules/org_governance/azuredevops.tf` — ADO ブランチポリシー + プロジェクト設定
+
+> [!NOTE]
+> ランナーグループ（GitHub）およびエージェントプール（ADO）は組織レベルでは**作成しない**。
+> 全リソースが単一サブスクリプション内にあり（組織/プロジェクト間の課金分離なし）、
+> ランナーグループ/エージェントプールはプロジェクトプロビジョニングの一部として `project_runner`（Layer 2）が作成する。
+> 各プロジェクトは完全に自己完結的 — 組織レベルの事前プロビジョニングなしにプロジェクト単位でランナー分離を実現。
 
 **デプロイされるリソース（GitHub）:**
 
-| リソース                 | Terraform タイプ                          | 目的                                             |
-| ------------------------ | ----------------------------------------- | ------------------------------------------------ |
-| 組織レベルルールセット   | `github_organization_ruleset`             | ブランチ保護と必須ワークフローを組織全体で適用   |
-| ランナーグループ         | `github_actions_runner_group`             | プロジェクトごとのランナー分離を組織レベルで実施 |
-| リポジトリデフォルト設定 | `github_actions_organization_permissions` | 新規リポジトリのデフォルト Actions 権限          |
+| リソース                 | Terraform タイプ                          | 目的                                           |
+| ------------------------ | ----------------------------------------- | ---------------------------------------------- |
+| 組織レベルルールセット   | `github_organization_ruleset`             | ブランチ保護と必須ワークフローを組織全体で適用 |
+| リポジトリデフォルト設定 | `github_actions_organization_permissions` | 新規リポジトリのデフォルト Actions 権限        |
 
 **デプロイされるリソース（Azure DevOps）:**
 
-| リソース           | Terraform タイプ               | 目的                                     |
-| ------------------ | ------------------------------ | ---------------------------------------- |
-| エージェントプール | `azuredevops_agent_pool`       | プロジェクトごとのエージェントプール分離 |
-| ブランチポリシー   | `azuredevops_branch_policy_*`  | ブランチ保護を組織全体で適用             |
-| プロジェクト設定   | `azuredevops_project_features` | プロジェクトのデフォルト機能設定         |
+| リソース         | Terraform タイプ               | 目的                             |
+| ---------------- | ------------------------------ | -------------------------------- |
+| ブランチポリシー | `azuredevops_branch_policy_*`  | ブランチ保護を組織全体で適用     |
+| プロジェクト設定 | `azuredevops_project_features` | プロジェクトのデフォルト機能設定 |
 
 ### `org_devcenter`
 
@@ -247,19 +248,19 @@ module "org_governance" {
 | 15  | Network Connection                                   | `azurerm_dev_center_network_connection`                  | Project RG       | `project_devbox`   |
 | 16  | Dev Box ロール割り当て                               | `azurerm_role_assignment`                                | Project RG       | `project_devbox`   |
 | 17  | ACA ジョブ（GitHub ランナーまたは ADO エージェント） | `azurerm_container_app_job`                              | Project RG       | `project_runner`   |
-| 18  | ランナーグループ/エージェントプール登録              | `github_actions_runner_group` / `azuredevops_agent_pool` | —                | `project_runner`   |
+| 18  | ランナーグループ/エージェントプール                  | `github_actions_runner_group` / `azuredevops_agent_pool` | —                | `project_runner`   |
 
 **合計: 1 リソースグループ（Project RG）、プロジェクトあたり約 18 リソース。**
 
 ### サブモジュール
 
-| サブモジュール     | 責務                                                                                                                                   | プラットフォーム非依存? | ステータス |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- | ---------- |
-| `project_state`    | Layer 2 Storage Account + プロジェクト Key Vault + プロジェクト RG                                                                     | はい                    | 新規       |
-| `project_identity` | 7 UAMI + OIDC フェデレーション資格情報 + サブスクリプション RBAC                                                                       | はい                    | 新規       |
-| `project_network`  | サブネットスライス（platform モード）または BYO VNet 検証                                                                              | はい                    | 新規       |
-| `project_devbox`   | DevCenter Project + Dev Box Pool + Network Connection                                                                                  | はい                    | 新規       |
-| `project_runner`   | ACA Environment + ACA ジョブ、GitHub ランナーグループまたは ADO エージェントプールに登録（ランナーコンピュートプラットフォームを含む） | いいえ（ディスパッチ）  | 新規       |
+| サブモジュール     | 責務                                                                                                                                                   | プラットフォーム非依存? | ステータス |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------- | ---------- |
+| `project_state`    | Layer 2 Storage Account + プロジェクト Key Vault + プロジェクト RG                                                                                     | はい                    | 新規       |
+| `project_identity` | 7 UAMI + OIDC フェデレーション資格情報 + サブスクリプション RBAC                                                                                       | はい                    | 新規       |
+| `project_network`  | サブネットスライス（platform モード）または BYO VNet 検証                                                                                              | はい                    | 新規       |
+| `project_devbox`   | DevCenter Project + Dev Box Pool + Network Connection                                                                                                  | はい                    | 新規       |
+| `project_runner`   | ACA Environment + ACA ジョブ + ランナーグループ（GitHub）またはエージェントプール（ADO）— プロジェクト単位の完全なランナーコンピュートプラットフォーム | いいえ（ディスパッチ）  | 新規       |
 
 ### `project_state`
 
@@ -330,31 +331,35 @@ DevCenter プロジェクトリソースを作成。
 
 ### `project_runner` — 抽象モジュール
 
-プロジェクトのランナーコンピュートプラットフォームを作成する。このモジュールは ACA Environment（コンピュートサーフェス）をプロビジョニングし、`org_governance` が作成した組織レベルのランナーグループ（GitHub）またはエージェントプール（ADO）内に ACA ジョブをセルフホステッドランナーとして登録する。
+プロジェクトの完全なランナーコンピュートプラットフォームを作成する。このモジュールはランナーグループ（GitHub）またはエージェントプール（ADO）、ACA Environment（コンピュートサーフェス）をプロビジョニングし、ACA ジョブをセルフホステッドランナーとして登録する。各プロジェクトは完全に自己完結的 — 組織レベルのランナーコンテナへの依存なし。
 
 > [!NOTE]
 > **Runner アーキテクチャ:**
-> `org_governance`（Layer 1）は組織レベルのランナーグループ（GitHub）/ エージェントプール（ADO）を作成する — 組織コンテナ。
-> `project_runner`（Layer 2）は実際のコンピュートを作成する: ACA Environment + ACA ジョブ + 組織レベルのコンテナへの登録。
-> `repo_runner`（Layer 3、オプション）は分離されたランナーが必要なリポジトリ用の専用 ACA ジョブを作成する。
+> `project_runner`（Layer 2）はプロジェクトのランナーライフサイクル全体を管理する:
+> ランナーグループ/エージェントプール作成 + ACA Environment + ACA ジョブ登録。
+> `repo_runner`（Layer 3、オプション）は分離されたランナーが必要なリポジトリ用の専用 ACA ジョブを作成し、
+> プロジェクトの ACA Environment とランナーグループ/エージェントプールを再利用する。
+>
+> **コストモデル:** ACA Environment はアイドル時コストゼロ。ACA ジョブはイベント駆動（ゼロスケール）で、
+> CI ジョブの実行時のみコストが発生する。これにより、ほぼゼロのアイドルコストでプロジェクト単位のランナープロビジョニングが実用的になる。
 
 **デプロイされるリソース（GitHub）:**
 
-| リソース                         | Terraform タイプ                                | 目的                                                          |
-| -------------------------------- | ----------------------------------------------- | ------------------------------------------------------------- |
-| ACA Environment                  | `azurerm_container_app_environment`             | プロジェクトのネットワークコンテキストでランナージョブを実行  |
-| ACA Environment DNS ゾーンリンク | `azurerm_private_dns_zone_virtual_network_link` | ACA 内部 DNS をプロジェクトの VNet にリンク                   |
-| ACA ジョブ（GitHub ランナー）    | `azurerm_container_app_job`                     | 共有 ACR からイメージを取得するセルフホステッドランナージョブ |
-| ランナーグループメンバーシップ   | `github_actions_runner_group`                   | プロジェクトの CI ジョブを専用ランナーグループにルーティング  |
+| リソース                         | Terraform タイプ                                | 目的                                                                          |
+| -------------------------------- | ----------------------------------------------- | ----------------------------------------------------------------------------- |
+| ランナーグループ                 | `github_actions_runner_group`                   | プロジェクト単位のランナー分離 — どのリポジトリがランナーを使用できるかを制御 |
+| ACA Environment                  | `azurerm_container_app_environment`             | プロジェクトのネットワークコンテキストでランナージョブを実行                  |
+| ACA Environment DNS ゾーンリンク | `azurerm_private_dns_zone_virtual_network_link` | ACA 内部 DNS をプロジェクトの VNet にリンク                                   |
+| ACA ジョブ（GitHub ランナー）    | `azurerm_container_app_job`                     | 共有 ACR からイメージを取得するセルフホステッドランナージョブ                 |
 
 **デプロイされるリソース（Azure DevOps）:**
 
-| リソース                         | Terraform タイプ                                | 目的                                                              |
-| -------------------------------- | ----------------------------------------------- | ----------------------------------------------------------------- |
-| ACA Environment                  | `azurerm_container_app_environment`             | プロジェクトのネットワークコンテキストでエージェントジョブを実行  |
-| ACA Environment DNS ゾーンリンク | `azurerm_private_dns_zone_virtual_network_link` | ACA 内部 DNS をプロジェクトの VNet にリンク                       |
-| ACA ジョブ（ADO エージェント）   | `azurerm_container_app_job`                     | 共有 ACR からイメージを取得するセルフホステッドエージェントジョブ |
-| エージェントプール登録           | `azuredevops_agent_pool`（参照）                | プロジェクトのパイプラインを専用エージェントプールにルーティング  |
+| リソース                         | Terraform タイプ                                | 目的                                                                            |
+| -------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------- |
+| エージェントプール               | `azuredevops_agent_pool`                        | プロジェクト単位のエージェントプール分離 — プロジェクトのパイプラインにスコープ |
+| ACA Environment                  | `azurerm_container_app_environment`             | プロジェクトのネットワークコンテキストでエージェントジョブを実行                |
+| ACA Environment DNS ゾーンリンク | `azurerm_private_dns_zone_virtual_network_link` | ACA 内部 DNS をプロジェクトの VNet にリンク                                     |
+| ACA ジョブ（ADO エージェント）   | `azurerm_container_app_job`                     | 共有 ACR からイメージを取得するセルフホステッドエージェントジョブ               |
 
 ---
 
@@ -488,7 +493,7 @@ module "repo_environment" {
 
 ### `repo_runner`（オプション）— 抽象モジュール
 
-プロジェクトレベルのランナーグループを共有する代わりに専用ランナーが必要なリポジトリ用:
+プロジェクトレベルのランナーを共有する代わりに専用ランナーが必要なリポジトリ用:
 
 ```hcl
 module "repo_runner" {
@@ -502,7 +507,7 @@ module "repo_runner" {
 }
 ```
 
-**デプロイされるリソース:** 専用 ACA ジョブ + ランナーグループ/エージェントプール登録を単一リポジトリにスコープ（Layer 2 の `project_runner` が作成した ACA Environment を使用）。
+**デプロイされるリソース:** 単一リポジトリにスコープされた専用 ACA ジョブ、プロジェクトのランナーグループ/エージェントプールに登録（Layer 2 の `project_runner` が作成した ACA Environment とランナーグループ/エージェントプールを使用）。
 
 ---
 

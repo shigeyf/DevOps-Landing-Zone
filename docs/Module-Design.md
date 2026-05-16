@@ -123,10 +123,8 @@ The Org LZ is a single root module that uses existing and new sub-modules to pro
 | 16  | Dev Box Definitions                   | `azurerm_dev_center_dev_box_definition` | DevBox RG      | `org_devcenter`  |
 | 17  | KV secrets (VCS PATs)                 | `azurerm_key_vault_secret`              | Bootstrap KV   | `org_devcenter`  |
 | 18  | Org-level rulesets _(GitHub)_         | `github_organization_ruleset`           | —              | `org_governance` |
-| 19  | Runner groups _(GitHub)_              | `github_actions_runner_group`           | —              | `org_governance` |
-| 20  | Agent pools _(ADO)_                   | `azuredevops_agent_pool`                | —              | `org_governance` |
 
-**Total: 3 Resource Groups (Network RG, Agents RG, DevBox RG), ~20 resources.**
+**Total: 3 Resource Groups (Network RG, Agents RG, DevBox RG), ~18 resources.**
 
 ### Sub-Modules
 
@@ -134,7 +132,7 @@ The Org LZ is a single root module that uses existing and new sub-modules to pro
 | ---------------- | --------------------------------------------------------- | ------------------ | -------- |
 | `org_vnet`       | Platform VNet + subnets + NAT Gateway + Private DNS zones | Yes                | Existing |
 | `org_acr`        | Azure Container Registry + image build tasks              | Yes                | Existing |
-| `org_governance` | Org-level rulesets, runner groups, agent pools            | No (dispatches)    | New      |
+| `org_governance` | Org-level rulesets and repository default settings        | No (dispatches)    | New      |
 | `org_devcenter`  | Dev Center + Dev Box Definitions (org catalog)            | Yes                | New      |
 
 > [!NOTE]
@@ -181,29 +179,32 @@ module "org_governance" {
 
   # Uniform inputs
   default_branch_rules = var.org_default_branch_rules
-  runner_group_name    = var.runner_group_name
   # ...
 }
 ```
 
 Internally dispatches to:
 
-- `modules/org_governance/github.tf` — GitHub org rulesets + runner groups
-- `modules/org_governance/azuredevops.tf` — ADO branch policies + agent pools
+- `modules/org_governance/github.tf` — GitHub org rulesets + default settings
+- `modules/org_governance/azuredevops.tf` — ADO branch policies + project settings
+
+> [!NOTE]
+> Runner groups (GitHub) and agent pools (ADO) are **not** created at the org level.
+> Since all resources reside in a single subscription (no billing separation between org/project),
+> runner groups/agent pools are created by `project_runner` (Layer 2) as part of project provisioning.
+> Each project is fully self-contained — runner isolation is achieved per-project without org-level pre-provisioning.
 
 **Deployed resources (GitHub):**
 
 | Resource            | Terraform Type                            | Purpose                                                   |
 | ------------------- | ----------------------------------------- | --------------------------------------------------------- |
 | Org-level rulesets  | `github_organization_ruleset`             | Enforce branch protection and required workflows org-wide |
-| Runner groups       | `github_actions_runner_group`             | Per-project runner isolation at the organization level    |
 | Repository defaults | `github_actions_organization_permissions` | Default Actions permissions for new repositories          |
 
 **Deployed resources (Azure DevOps):**
 
 | Resource         | Terraform Type                 | Purpose                               |
 | ---------------- | ------------------------------ | ------------------------------------- |
-| Agent pools      | `azuredevops_agent_pool`       | Per-project agent pool isolation      |
 | Branch policies  | `azuredevops_branch_policy_*`  | Enforce branch protection org-wide    |
 | Project settings | `azuredevops_project_features` | Default project feature configuration |
 
@@ -247,19 +248,19 @@ The Project LZ provisions per-project infrastructure. It does **not** create rep
 | 15  | Network Connection                   | `azurerm_dev_center_network_connection`                  | Project RG     | `project_devbox`   |
 | 16  | Dev Box role assignments             | `azurerm_role_assignment`                                | Project RG     | `project_devbox`   |
 | 17  | ACA Job (GitHub runner or ADO agent) | `azurerm_container_app_job`                              | Project RG     | `project_runner`   |
-| 18  | Runner group/agent pool registration | `github_actions_runner_group` / `azuredevops_agent_pool` | —              | `project_runner`   |
+| 18  | Runner group/agent pool              | `github_actions_runner_group` / `azuredevops_agent_pool` | —              | `project_runner`   |
 
 **Total: 1 Resource Group (Project RG), ~18 resources per project.**
 
 ### Sub-Modules
 
-| Sub-Module         | Responsibility                                                                                                     | Platform-Agnostic? | Status |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------ | ------------------ | ------ |
-| `project_state`    | Layer 2 Storage Account + Project Key Vault + Project RG                                                           | Yes                | New    |
-| `project_identity` | 7 UAMIs + OIDC federated credentials + subscription RBAC                                                           | Yes                | New    |
-| `project_network`  | Subnet slice (platform mode) or BYO VNet validation                                                                | Yes                | New    |
-| `project_devbox`   | DevCenter Project + Dev Box Pool + Network Connection                                                              | Yes                | New    |
-| `project_runner`   | ACA Environment + ACA Job registered with GitHub runner group or ADO agent pool (includes runner compute platform) | No (dispatches)    | New    |
+| Sub-Module         | Responsibility                                                                                                       | Platform-Agnostic? | Status |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------- | ------------------ | ------ |
+| `project_state`    | Layer 2 Storage Account + Project Key Vault + Project RG                                                             | Yes                | New    |
+| `project_identity` | 7 UAMIs + OIDC federated credentials + subscription RBAC                                                             | Yes                | New    |
+| `project_network`  | Subnet slice (platform mode) or BYO VNet validation                                                                  | Yes                | New    |
+| `project_devbox`   | DevCenter Project + Dev Box Pool + Network Connection                                                                | Yes                | New    |
+| `project_runner`   | ACA Environment + ACA Job + runner group (GitHub) or agent pool (ADO) — complete runner compute platform per project | No (dispatches)    | New    |
 
 ### `project_state`
 
@@ -330,29 +331,35 @@ Creates DevCenter project resources.
 
 ### `project_runner` — Abstract Module
 
-Creates the runner compute platform for a project. This module provisions the ACA Environment (the compute surface) **and** registers an ACA Job as a self-hosted runner within the org-level runner group (GitHub) or agent pool (ADO) created by `org_governance`.
+Creates the complete runner compute platform for a project. This module provisions the runner group (GitHub) or agent pool (ADO), the ACA Environment (the compute surface), **and** registers an ACA Job as a self-hosted runner. Each project is fully self-contained — no dependency on org-level runner containers.
 
 > [!NOTE]
-> **Runner architecture:** `org_governance` (Layer 1) creates the organizational container (runner group / agent pool).
-> `project_runner` (Layer 2) creates the actual compute: ACA Environment + ACA Job + registration into that org-level container.
+> **Runner architecture:** `project_runner` (Layer 2) owns the entire runner lifecycle for a project:
+> runner group/agent pool creation + ACA Environment + ACA Job registration.
+> `repo_runner` (Layer 3, optional) creates dedicated ACA Jobs for repos needing isolated runners,
+> reusing the project's ACA Environment and runner group/agent pool.
+>
+> **Cost model:** ACA Environment has no cost when idle. ACA Jobs are event-driven (scale-to-zero) and
+> only incur cost when CI jobs are actually running. This makes per-project runner provisioning practical
+> with near-zero idle cost.
 
 **Deployed resources (GitHub):**
 
 | Resource                      | Terraform Type                                  | Purpose                                                                     |
 | ----------------------------- | ----------------------------------------------- | --------------------------------------------------------------------------- |
+| Runner group                  | `github_actions_runner_group`                   | Per-project runner isolation — controls which repos can use these runners   |
 | ACA Environment               | `azurerm_container_app_environment`             | Runs the project's self-hosted runner Jobs in the project's network context |
 | ACA Environment DNS zone link | `azurerm_private_dns_zone_virtual_network_link` | Links the ACA internal DNS to the project's VNet                            |
 | ACA Job (GitHub runner)       | `azurerm_container_app_job`                     | Self-hosted runner job pulling image from shared ACR                        |
-| Runner group membership       | `github_actions_runner_group`                   | Routes project CI jobs to the project's own runner group                    |
 
 **Deployed resources (Azure DevOps):**
 
 | Resource                      | Terraform Type                                  | Purpose                                                                    |
 | ----------------------------- | ----------------------------------------------- | -------------------------------------------------------------------------- |
+| Agent pool                    | `azuredevops_agent_pool`                        | Per-project agent pool isolation — scoped to the project's pipelines       |
 | ACA Environment               | `azurerm_container_app_environment`             | Runs the project's self-hosted agent Jobs in the project's network context |
 | ACA Environment DNS zone link | `azurerm_private_dns_zone_virtual_network_link` | Links the ACA internal DNS to the project's VNet                           |
 | ACA Job (ADO agent)           | `azurerm_container_app_job`                     | Self-hosted agent job pulling image from shared ACR                        |
-| Agent pool registration       | `azuredevops_agent_pool` (reference)            | Routes project pipelines to the project's own agent pool                   |
 
 ---
 
@@ -486,7 +493,7 @@ Generates profile-driven CI/CD workflow or pipeline files.
 
 ### `repo_runner` (optional) — Abstract Module
 
-For repos that need a dedicated runner (rather than sharing the project-level runner group):
+For repos that need a dedicated runner (rather than sharing the project-level runner):
 
 ```hcl
 module "repo_runner" {
@@ -500,7 +507,7 @@ module "repo_runner" {
 }
 ```
 
-**Deployed resources:** Dedicated ACA Job + runner group/agent pool registration scoped to a single repository (uses the ACA Environment created by `project_runner` in Layer 2).
+**Deployed resources:** Dedicated ACA Job scoped to a single repository, registered in the project's runner group/agent pool (uses the ACA Environment and runner group/agent pool created by `project_runner` in Layer 2).
 
 ---
 
