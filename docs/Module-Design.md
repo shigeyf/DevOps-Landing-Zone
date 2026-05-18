@@ -81,7 +81,161 @@ The Bootstrap layer creates the foundational state backend and secret store for 
 
 Creates the Layer 1 state backend and its protection chain.
 
-**Deployed resources:**
+#### AVM Modules Used
+
+The bootstrap module leverages the following [Azure Verified Modules (AVM)](https://azure.github.io/Azure-Verified-Modules/) for production-grade resource deployment:
+
+| AVM Module                                        | Registry Source                                    | Version | Purpose                                             |
+| ------------------------------------------------- | -------------------------------------------------- | ------- | --------------------------------------------------- |
+| Storage Account                                   | `Azure/avm-res-storage-storageaccount/azurerm`     | 0.6.3   | Layer 1 tfstate backend with CMK encryption support |
+| Key Vault                                         | `Azure/avm-res-keyvault-vault/azurerm`             | 0.10.1  | CMK store with RBAC authorization + purge protect   |
+| User Assigned Managed Identity _(native planned)_ | `azurerm_user_assigned_identity` (native resource) | —       | CMK encryption chain identity                       |
+
+> [!NOTE]
+> The UAMI currently uses a native `azurerm_user_assigned_identity` resource. Migration to `Azure/avm-res-managedidentity-userassignedidentity/azurerm` is planned for consistency with the AVM pattern across all layers.
+
+#### Internal Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  bootstrap (root module)                                            │
+│                                                                     │
+│  ┌──────────────────┐                                               │
+│  │ azurerm_resource │  Resource Group (lifecycle anchor)            │
+│  │ _group.base      │                                               │
+│  └────────┬─────────┘                                               │
+│           │                                                         │
+│  ┌────────▼─────────────────────────────────────────────────────┐   │
+│  │ AVM: avm-res-keyvault-vault/azurerm                          │   │
+│  │  • RBAC: Key Vault Administrator → deployer                  │   │
+│  │  • RBAC: Key Vault Crypto Officer → UAMI                     │   │
+│  │  • purge_protection_enabled = true                           │   │
+│  └────────┬─────────────────────────────────────────────────────┘   │
+│           │                                                         │
+│  ┌────────▼─────────┐                                               │
+│  │ azurerm_key_vault│  CMK (RSA 4096-bit, rotation policy)         │
+│  │ _key.tfbackend   │                                               │
+│  └────────┬─────────┘                                               │
+│           │                                                         │
+│  ┌────────▼─────────────────────────────────────────────────────┐   │
+│  │ AVM: avm-res-storage-storageaccount/azurerm                  │   │
+│  │  • StorageV2 / Standard / LRS                                │   │
+│  │  • infrastructure_encryption_enabled = true                  │   │
+│  │  • customer_managed_key → Key Vault CMK + UAMI               │   │
+│  │  • containers: { tfstate }                                   │   │
+│  │  • RBAC: Storage Blob Data Owner → deployer                  │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+│  ┌──────────────────┐                                               │
+│  │ azurerm_user_    │  UAMI (CMK encryption chain)                 │
+│  │ assigned_identity│                                               │
+│  └──────────────────┘                                               │
+│                                                                     │
+│  ┌──────────────────┐                                               │
+│  │ local_file       │  bootstrap.config.json                       │
+│  │ local_file       │  backend.tf (for state migration)            │
+│  │ local_file       │  azurerm.tfbackend (downstream template)     │
+│  └──────────────────┘                                               │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+#### Dependency Chain
+
+Resources are created in strict dependency order to establish the encryption chain:
+
+```
+Resource Group
+  └─► UAMI
+  └─► Key Vault (AVM) ──► RBAC propagation wait (60s)
+        └─► CMK Key (azurerm_key_vault_key)
+              └─► Storage Account (AVM) with customer_managed_key
+                    └─► local_file outputs (config JSON + backend configs)
+```
+
+#### Variable Interface
+
+| Variable                              | Type          | Default          | Description                                             |
+| ------------------------------------- | ------------- | ---------------- | ------------------------------------------------------- |
+| `location`                            | `string`      | —                | Azure region for deployment                             |
+| `tags`                                | `map(string)` | `{}`             | Tags applied to all resources                           |
+| `resource_group_name`                 | `string`      | —                | Bootstrap resource group name                           |
+| `storage_account_name`                | `string`      | —                | Storage Account name (must be globally unique)          |
+| `keyvault_name`                       | `string`      | —                | Key Vault name (must be globally unique)                |
+| `tfstate_container_name`              | `string`      | `"tfstate"`      | Blob container name for tfstate files                   |
+| `enable_user_assigned_identity`       | `bool`        | `false`          | Enable UAMI for CMK encryption chain                    |
+| `enable_storage_customer_managed_key` | `bool`        | `false`          | Enable CMK encryption on Storage Account                |
+| `storage_customer_managed_key_policy` | `object`      | RSA/4096/P90D    | CMK key type, size, rotation policy, and expiration     |
+| `bootstrap_config_filename`           | `string`      | `"./bootstrap…"` | Output path for bootstrap config JSON                   |
+| `tfbackend_config_template_filename`  | `string`      | `"./azurerm…"`   | Output path for backend config template                 |
+| `purge_protection_enabled`            | `bool`        | `true`           | Key Vault purge protection (recommended for production) |
+| `soft_delete_retention_days`          | `number`      | `7`              | Key Vault soft-delete retention (7–90 days)             |
+
+#### AVM Module Configuration Details
+
+**Storage Account (`avm-res-storage-storageaccount`):**
+
+```hcl
+module "tfbackend" {
+  source  = "Azure/avm-res-storage-storageaccount/azurerm"
+  version = "0.6.3"
+
+  account_kind                      = "StorageV2"
+  account_replication_type          = "LRS"
+  account_tier                      = "Standard"
+  min_tls_version                   = "TLS1_2"
+  infrastructure_encryption_enabled = true
+  public_network_access_enabled     = true  # Locked down via PE in Layer 1
+
+  containers = { tfstate = { name = var.tfstate_container_name } }
+
+  managed_identities = {
+    system_assigned            = true
+    user_assigned_resource_ids = [azurerm_user_assigned_identity.this.id]
+  }
+
+  role_assignments = {
+    deployer = {
+      role_definition_id_or_name = "Storage Blob Data Owner"
+      principal_id               = data.azurerm_client_config.current.object_id
+    }
+  }
+
+  customer_managed_key = {
+    key_vault_resource_id  = module.kv.resource_id
+    key_name               = azurerm_key_vault_key.tfbackend_cmk.name
+    user_assigned_identity = { resource_id = azurerm_user_assigned_identity.this.id }
+  }
+}
+```
+
+**Key Vault (`avm-res-keyvault-vault`):**
+
+```hcl
+module "kv" {
+  source  = "Azure/avm-res-keyvault-vault/azurerm"
+  version = "0.10.1"
+
+  sku_name                      = "standard"
+  public_network_access_enabled = true  # Locked down via PE in Layer 1
+  purge_protection_enabled      = true
+  soft_delete_retention_days    = 7
+
+  role_assignments = {
+    deployer = {
+      role_definition_id_or_name = "Key Vault Administrator"
+      principal_id               = data.azurerm_client_config.current.object_id
+    }
+    cmk_identity = {
+      role_definition_id_or_name = "Key Vault Crypto Officer"
+      principal_id               = azurerm_user_assigned_identity.this.principal_id
+    }
+  }
+
+  wait_for_rbac_before_secret_operations = { create = "60s" }
+}
+```
+
+#### Deployed Resources
 
 | Resource                         | Terraform Type                   | Purpose                                                                                                |
 | -------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------ |
@@ -93,7 +247,18 @@ Creates the Layer 1 state backend and its protection chain.
 | Bootstrap UAMI                   | `azurerm_user_assigned_identity` | Identity granted CMK access (`Storage Account → Key Vault` encryption chain)                           |
 | `azurerm.tfbackend` config files | `local_file`                     | Generated Terraform backend config templates for all downstream layers                                 |
 
-**Outputs:** `storage_account_name`, `storage_account_id`, `key_vault_id`, `key_vault_uri`, `resource_group_name`, `bootstrap_config_json` (consumed by all downstream layers).
+#### Outputs
+
+| Output                   | Type     | Description                                    |
+| ------------------------ | -------- | ---------------------------------------------- |
+| `resource_group_name`    | `string` | Bootstrap resource group name                  |
+| `storage_account_name`   | `string` | Storage Account name (used in backend configs) |
+| `tfstate_container_name` | `string` | Blob container name for tfstate                |
+| `keyvault_name`          | `string` | Key Vault name                                 |
+| `storage_id`             | `string` | Storage Account resource ID                    |
+| `keyvault_id`            | `string` | Key Vault resource ID                          |
+
+These outputs are written to `bootstrap.config.json` and consumed by all downstream layers for `terraform_remote_state` configuration.
 
 ---
 

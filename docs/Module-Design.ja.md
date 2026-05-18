@@ -81,7 +81,161 @@ DevOps Landing Zone は **4 つ** の個別の Terraform デプロイメント�
 
 Layer 1 状態バックエンドとその保護チェーンを作成する。
 
-**デプロイされるリソース:**
+#### 使用する AVM モジュール
+
+bootstrap モジュールは、以下の [Azure Verified Modules (AVM)](https://azure.github.io/Azure-Verified-Modules/) を使用してプロダクショングレードのリソースデプロイを行う:
+
+| AVM モジュール                                   | レジストリソース                                       | バージョン | 目的                                          |
+| ------------------------------------------------ | ------------------------------------------------------ | ---------- | --------------------------------------------- |
+| Storage Account                                  | `Azure/avm-res-storage-storageaccount/azurerm`         | 0.6.3      | CMK 暗号化対応の Layer 1 tfstate バックエンド |
+| Key Vault                                        | `Azure/avm-res-keyvault-vault/azurerm`                 | 0.10.1     | RBAC 認可 + パージ保護付き CMK ストア         |
+| User Assigned Managed Identity（ネイティブ予定） | `azurerm_user_assigned_identity`（ネイティブリソース） | —          | CMK 暗号化チェーン用 ID                       |
+
+> [!NOTE]
+> UAMI は現在ネイティブ `azurerm_user_assigned_identity` リソースを使用している。全レイヤーでの AVM パターン統一のため、`Azure/avm-res-managedidentity-userassignedidentity/azurerm` への移行を計画している。
+
+#### 内部アーキテクチャ
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  bootstrap (ルートモジュール)                                        │
+│                                                                     │
+│  ┌──────────────────┐                                               │
+│  │ azurerm_resource │  リソースグループ (ライフサイクルアンカー)     │
+│  │ _group.base      │                                               │
+│  └────────┬─────────┘                                               │
+│           │                                                         │
+│  ┌────────▼─────────────────────────────────────────────────────┐   │
+│  │ AVM: avm-res-keyvault-vault/azurerm                          │   │
+│  │  • RBAC: Key Vault Administrator → デプロイヤー              │   │
+│  │  • RBAC: Key Vault Crypto Officer → UAMI                     │   │
+│  │  • purge_protection_enabled = true                           │   │
+│  └────────┬─────────────────────────────────────────────────────┘   │
+│           │                                                         │
+│  ┌────────▼─────────┐                                               │
+│  │ azurerm_key_vault│  CMK (RSA 4096 ビット、ローテーションポリシー)│
+│  │ _key.tfbackend   │                                               │
+│  └────────┬─────────┘                                               │
+│           │                                                         │
+│  ┌────────▼─────────────────────────────────────────────────────┐   │
+│  │ AVM: avm-res-storage-storageaccount/azurerm                  │   │
+│  │  • StorageV2 / Standard / LRS                                │   │
+│  │  • infrastructure_encryption_enabled = true                  │   │
+│  │  • customer_managed_key → Key Vault CMK + UAMI               │   │
+│  │  • containers: { tfstate }                                   │   │
+│  │  • RBAC: Storage Blob Data Owner → デプロイヤー              │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+│  ┌──────────────────┐                                               │
+│  │ azurerm_user_    │  UAMI (CMK 暗号化チェーン)                   │
+│  │ assigned_identity│                                               │
+│  └──────────────────┘                                               │
+│                                                                     │
+│  ┌──────────────────┐                                               │
+│  │ local_file       │  bootstrap.config.json                       │
+│  │ local_file       │  backend.tf (状態移行用)                     │
+│  │ local_file       │  azurerm.tfbackend (下流テンプレート)        │
+│  └──────────────────┘                                               │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+#### 依存関係チェーン
+
+暗号化チェーンを確立するため、リソースは厳密な依存順序で作成される:
+
+```
+リソースグループ
+  └─► UAMI
+  └─► Key Vault (AVM) ──► RBAC 伝播待機 (60 秒)
+        └─► CMK キー (azurerm_key_vault_key)
+              └─► Storage Account (AVM) + customer_managed_key
+                    └─► local_file 出力 (設定 JSON + バックエンド設定)
+```
+
+#### 変数インターフェース
+
+| 変数                                  | 型            | デフォルト       | 説明                                                     |
+| ------------------------------------- | ------------- | ---------------- | -------------------------------------------------------- |
+| `location`                            | `string`      | —                | デプロイ先の Azure リージョン                            |
+| `tags`                                | `map(string)` | `{}`             | すべてのリソースに適用されるタグ                         |
+| `resource_group_name`                 | `string`      | —                | ブートストラップ リソースグループ名                      |
+| `storage_account_name`                | `string`      | —                | Storage Account 名（グローバル一意）                     |
+| `keyvault_name`                       | `string`      | —                | Key Vault 名（グローバル一意）                           |
+| `tfstate_container_name`              | `string`      | `"tfstate"`      | tfstate ファイル用 blob コンテナ名                       |
+| `enable_user_assigned_identity`       | `bool`        | `false`          | CMK 暗号化チェーン用 UAMI の有効化                       |
+| `enable_storage_customer_managed_key` | `bool`        | `false`          | Storage Account の CMK 暗号化有効化                      |
+| `storage_customer_managed_key_policy` | `object`      | RSA/4096/P90D    | CMK キータイプ、サイズ、ローテーションポリシー、有効期限 |
+| `bootstrap_config_filename`           | `string`      | `"./bootstrap…"` | ブートストラップ設定 JSON の出力パス                     |
+| `tfbackend_config_template_filename`  | `string`      | `"./azurerm…"`   | バックエンド設定テンプレートの出力パス                   |
+| `purge_protection_enabled`            | `bool`        | `true`           | Key Vault パージ保護（本番推奨）                         |
+| `soft_delete_retention_days`          | `number`      | `7`              | Key Vault 論理削除保持日数（7〜90 日）                   |
+
+#### AVM モジュール構成の詳細
+
+**Storage Account (`avm-res-storage-storageaccount`):**
+
+```hcl
+module "tfbackend" {
+  source  = "Azure/avm-res-storage-storageaccount/azurerm"
+  version = "0.6.3"
+
+  account_kind                      = "StorageV2"
+  account_replication_type          = "LRS"
+  account_tier                      = "Standard"
+  min_tls_version                   = "TLS1_2"
+  infrastructure_encryption_enabled = true
+  public_network_access_enabled     = true  # Layer 1 で PE によりロックダウン
+
+  containers = { tfstate = { name = var.tfstate_container_name } }
+
+  managed_identities = {
+    system_assigned            = true
+    user_assigned_resource_ids = [azurerm_user_assigned_identity.this.id]
+  }
+
+  role_assignments = {
+    deployer = {
+      role_definition_id_or_name = "Storage Blob Data Owner"
+      principal_id               = data.azurerm_client_config.current.object_id
+    }
+  }
+
+  customer_managed_key = {
+    key_vault_resource_id  = module.kv.resource_id
+    key_name               = azurerm_key_vault_key.tfbackend_cmk.name
+    user_assigned_identity = { resource_id = azurerm_user_assigned_identity.this.id }
+  }
+}
+```
+
+**Key Vault (`avm-res-keyvault-vault`):**
+
+```hcl
+module "kv" {
+  source  = "Azure/avm-res-keyvault-vault/azurerm"
+  version = "0.10.1"
+
+  sku_name                      = "standard"
+  public_network_access_enabled = true  # Layer 1 で PE によりロックダウン
+  purge_protection_enabled      = true
+  soft_delete_retention_days    = 7
+
+  role_assignments = {
+    deployer = {
+      role_definition_id_or_name = "Key Vault Administrator"
+      principal_id               = data.azurerm_client_config.current.object_id
+    }
+    cmk_identity = {
+      role_definition_id_or_name = "Key Vault Crypto Officer"
+      principal_id               = azurerm_user_assigned_identity.this.principal_id
+    }
+  }
+
+  wait_for_rbac_before_secret_operations = { create = "60s" }
+}
+```
+
+#### デプロイされるリソース
 
 | リソース                          | Terraform タイプ                 | 目的                                                                                     |
 | --------------------------------- | -------------------------------- | ---------------------------------------------------------------------------------------- |
@@ -93,7 +247,18 @@ Layer 1 状態バックエンドとその保護チェーンを作成する。
 | ブートストラップ UAMI             | `azurerm_user_assigned_identity` | CMK アクセス権を付与された ID（`Storage Account → Key Vault` 暗号化チェーン）            |
 | `azurerm.tfbackend` 設定ファイル  | `local_file`                     | すべての下流レイヤー用に生成された Terraform バックエンド設定テンプレート                |
 
-**出力:** `storage_account_name`、`storage_account_id`、`key_vault_id`、`key_vault_uri`、`resource_group_name`、`bootstrap_config_json`（すべての下流レイヤーで消費される）。
+#### 出力
+
+| 出力                     | 型       | 説明                                         |
+| ------------------------ | -------- | -------------------------------------------- |
+| `resource_group_name`    | `string` | ブートストラップ リソースグループ名          |
+| `storage_account_name`   | `string` | Storage Account 名（バックエンド設定で使用） |
+| `tfstate_container_name` | `string` | tfstate 用 blob コンテナ名                   |
+| `keyvault_name`          | `string` | Key Vault 名                                 |
+| `storage_id`             | `string` | Storage Account リソース ID                  |
+| `keyvault_id`            | `string` | Key Vault リソース ID                        |
+
+これらの出力は `bootstrap.config.json` に書き込まれ、すべての下流レイヤーが `terraform_remote_state` 設定で消費する。
 
 ---
 
